@@ -1,52 +1,18 @@
-#import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
-
 #import "../src-tauri/native/macos_audio.m"
-
-@interface AKMacAudioBridge (TailDrainTest)
-- (void)endVoiceSession;
-- (void)setGainDecibels:(float)decibels;
-@end
 
 @interface FakeAudioEngine : NSObject
 @property(nonatomic) BOOL stopped;
+@property(nonatomic) int starts;
 @end
-
 @implementation FakeAudioEngine
-- (BOOL)isRunning {
-    return !self.stopped;
-}
-
-- (void)stop {
-    self.stopped = YES;
-}
-@end
-
-@interface FakeAudioPlayer : NSObject
-@property(nonatomic, copy) void (^playedBack)(void);
-@property(nonatomic, strong) AVAudioPCMBuffer *scheduledBuffer;
-@end
-
-@implementation FakeAudioPlayer
-- (BOOL)isPlaying {
+- (BOOL)isRunning { return !self.stopped; }
+- (void)stop { self.stopped = YES; }
+- (void)pause { self.stopped = YES; }
+- (BOOL)startAndReturnError:(NSError **)error {
+    self.stopped = NO;
+    self.starts += 1;
     return YES;
-}
-
-- (void)stop {}
-
-- (void)scheduleBuffer:(AVAudioPCMBuffer *)buffer
-     completionHandler:(void (^)(void))completionHandler {
-    self.scheduledBuffer = buffer;
-    self.playedBack = completionHandler;
-}
-
-- (void)scheduleBuffer:(AVAudioPCMBuffer *)buffer
-                 atTime:(AVAudioTime *)when
-                 options:(AVAudioPlayerNodeBufferOptions)options
-       completionCallbackType:(AVAudioPlayerNodeCompletionCallbackType)callbackType
-           completionHandler:(void (^)(AVAudioPlayerNodeCompletionCallbackType))completionHandler {
-    self.scheduledBuffer = buffer;
-    self.playedBack = ^{ completionHandler(AVAudioPlayerNodeCompletionDataPlayedBack); };
 }
 @end
 
@@ -55,28 +21,23 @@ static void PumpMainRunLoop(NSTimeInterval seconds) {
 }
 
 typedef struct {
-    int received;
-    int rejected;
-    int playedSamples;
-    int discardedBuffers;
-    int reports;
-    int activeReports;
-    int lastWindow;
+    int received, rejected, renderedSamples, discardedBuffers;
+    int reports, activeReports, lastWindow;
 } AudioEvents;
-
 static void CaptureAudioEvent(void *context, int event, const uint8_t *data,
                               size_t length, int value1, int value2) {
     AudioEvents *events = context;
-    if (event == AKAudioEventReceived) events->received += 1;
-    if (event == AKAudioEventRejected) events->rejected += 1;
-    if (event == AKAudioEventPlayed) events->playedSamples += value1;
+    if (event == AKAudioEventReceived) events->received++;
+    if (event == AKAudioEventRejected) events->rejected++;
+    if (event == AKAudioEventRendered) events->renderedSamples += value1;
     if (event == AKAudioEventOutputReset) events->discardedBuffers += value1;
     if (event == AKAudioEventDiagnostics) {
-        events->reports += 1;
+        events->reports++;
         events->activeReports += value1 != 0;
         events->lastWindow = value2;
     }
 }
+#define CHECK(condition, message) do { if (!(condition)) { fputs(message "\n", stderr); return 1; } } while (0)
 
 int main(void) {
     @autoreleasepool {
@@ -84,83 +45,65 @@ int main(void) {
         AKAudioCallbacks callbacks = {.context = &events, .on_event = CaptureAudioEvent};
         AKMacAudioBridge *bridge = [[AKMacAudioBridge alloc] initWithCallbacks:&callbacks];
         [bridge handleAudioData:[NSData dataWithBytes:"\x11" length:1]];
-        if (events.received != 1 || events.rejected != 1) {
-            fputs("rejected audio notification was not counted\n", stderr);
-            return 1;
-        }
+        CHECK(events.received == 1 && events.rejected == 1, "rejected notification not counted");
         FakeAudioEngine *engine = [[FakeAudioEngine alloc] init];
-        FakeAudioPlayer *player = [[FakeAudioPlayer alloc] init];
+        AKAudioPCMStorage *storage = [[AKAudioPCMStorage alloc] init];
         [bridge setValue:engine forKey:@"engine"];
-        [bridge setValue:player forKey:@"player"];
-        [bridge setValue:@YES forKey:@"streaming"];
+        [bridge setValue:[[NSObject alloc] init] forKey:@"sourceNode"];
+        [bridge setValue:storage forKey:@"pcmStorage"];
+        [bridge beginVoiceSession];
         [bridge startDiagnostics];
         [bridge startDiagnostics];
         PumpMainRunLoop(1.1);
-        if (events.reports != 1 || events.activeReports != 1 || events.lastWindow < 900) {
-            fputs("active silent session did not produce one periodic diagnostic event\n", stderr);
-            return 1;
-        }
-        [bridge setGainDecibels:6.0f];
-
+        CHECK(events.reports == 1 && events.activeReports == 1 && events.lastWindow >= 900,
+              "silent active session did not produce one diagnostic event");
+        [bridge setGainDecibels:6];
         int16_t samples[] = {100, 200, 30000, 400};
-        if (![bridge enqueueSamples:samples count:4]) {
-            fputs("failed to enqueue the tail buffer\n", stderr);
-            return 1;
-        }
-        if (player.scheduledBuffer == nil || player.scheduledBuffer.floatChannelData == NULL) {
-            fputs("gain test did not receive a PCM buffer\n", stderr);
-            return 1;
-        }
-        if (events.playedSamples != 0) {
-            fputs("scheduled audio was incorrectly counted as played\n", stderr);
-            return 1;
-        }
-        float *channel = player.scheduledBuffer.floatChannelData[0];
-        if (fabsf(channel[0] - (100.0f / (float)INT16_MAX) * powf(10.0f, 6.0f / 20.0f)) > 0.0001f || channel[2] != 1.0f) {
-            fputs("audio gain was not applied with output limiting\n", stderr);
-            return 1;
-        }
-
+        CHECK([bridge enqueueSamples:samples count:4], "enqueue failed");
+        CHECK(fabsf(storage->queue.samples[0] - 100.0f / 32768.0f * powf(10, 0.3f)) < 0.0001f &&
+              storage->queue.samples[2] == 1, "gain or clipping is incorrect");
+        CHECK([[bridge valueForKey:@"clippedSamples"] intValue] == 1, "clipping not counted");
+        float output[512];
+        CHECK(AKPCMQueueRender(&storage->queue, output, 512) == 0, "short packet bypassed prebuffer");
         [bridge endVoiceSession];
-        PumpMainRunLoop(0.5);
-        if (engine.stopped) {
-            fputs("audio output stopped before the tail buffer played back\n", stderr);
-            return 1;
-        }
-        if (player.playedBack == nil) {
-            fputs("tail buffer has no playback completion callback\n", stderr);
-            return 1;
-        }
+        PumpMainRunLoop(0.1);
+        CHECK(!engine.stopped && events.renderedSamples == 0, "tail was discarded before render");
+        CHECK(AKPCMQueueRender(&storage->queue, output, 512) == 4, "short tail did not drain");
+        PumpMainRunLoop(0.05);
+        CHECK(events.renderedSamples == 4 && events.discardedBuffers == 0 && !engine.stopped,
+              "tail metrics or warm output incorrect");
+        CHECK(![[bridge valueForKey:@"drainRequested"] boolValue], "tail drain did not finish");
 
-        player.playedBack();
+        // Device changes must resume the same graph without discarding queued PCM.
+        [bridge beginVoiceSession];
+        CHECK([bridge enqueueSamples:samples count:4], "second enqueue failed");
+        engine.stopped = YES;
+        CHECK([bridge ensureAudioOutput], "output resume failed");
+        CHECK([bridge valueForKey:@"engine"] == engine && engine.starts == 1 &&
+              AKPCMQueueCount(&storage->queue) == 4, "resume replaced the graph or dropped PCM");
+        [bridge endVoiceSession];
+        AKPCMQueueRender(&storage->queue, output, 512);
         PumpMainRunLoop(0.05);
-        if (!engine.stopped) {
-            fputs("audio output did not stop after the tail buffer played back\n", stderr);
-            return 1;
-        }
-        if (events.playedSamples != 4 || events.discardedBuffers != 0) {
-            fputs("tail playback diagnostics are incorrect\n", stderr);
-            return 1;
-        }
-        player.playedBack();
-        PumpMainRunLoop(0.05);
-        if (events.playedSamples != 4) {
-            fputs("stale player callback was counted as new playback\n", stderr);
-            return 1;
-        }
-        [bridge setValue:@2 forKey:@"pendingAudioBuffers"];
+        CHECK(events.renderedSamples == 8, "second tail not rendered");
+        [bridge collectRenderedAudio];
+        CHECK(events.renderedSamples == 8, "rendered samples were double counted");
+        [bridge beginVoiceSession];
+        [bridge endVoiceSession];
+        PumpMainRunLoop(5.1);
+        CHECK(engine.stopped && [bridge valueForKey:@"engine"] == engine,
+              "idle output did not pause while retaining its graph");
+        [bridge beginVoiceSession];
+        CHECK(!engine.stopped && engine.starts == 2, "idle output did not resume");
+        [bridge enqueueSamples:samples count:4];
+        [bridge enqueueSamples:samples count:4];
         [bridge stopAudioOutput];
-        if (events.discardedBuffers != 2) {
-            fputs("discarded pending buffers were not counted\n", stderr);
-            return 1;
-        }
+        CHECK(events.discardedBuffers == 2 && engine.stopped, "shutdown did not discard pending PCM");
+        PumpMainRunLoop(0.05);
+        CHECK(events.renderedSamples == 8, "stale render poll counted a discarded buffer");
         [bridge stop];
-        int reportsAfterStop = events.reports;
+        int reports = events.reports;
         PumpMainRunLoop(1.1);
-        if (events.reports != reportsAfterStop) {
-            fputs("diagnostic timer survived bridge stop\n", stderr);
-            return 1;
-        }
+        CHECK(events.reports == reports, "diagnostic timer survived shutdown");
     }
     return 0;
 }

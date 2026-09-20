@@ -79,8 +79,19 @@ owns frame accumulation, ADPCM decoding, gain, and audio diagnostics. On Windows
 the service uses Windows Bluetooth GATT APIs and CPAL to forward voice to
 VB-CABLE. On macOS, the Objective-C adapter hides CoreBluetooth,
 ATVV session control, AVAudioEngine device binding, reconnect timeouts and
-sleep-safe audio-engine lifetime. The macOS service starts with the app, but opens
-Core Audio IO only while RC003 is sending voice data.
+sleep-safe audio-engine lifetime. The macOS service prepares Core Audio output
+when RC003 voice capabilities are confirmed and reuses the configured engine
+between presses. After five idle seconds it pauses IO while retaining the graph;
+disconnect and shutdown release the output. A bounded single-producer,
+single-consumer PCM ring feeds an AVAudioSourceNode, with a 30 ms prebuffer and
+2 ms fades at underruns. The render callback performs no allocation, logging,
+or blocking synchronization; the main queue collects rendered-sample counters.
+
+Long presses can still exhibit approximately 1.8–2 seconds of cumulative delay
+and missing speech at release on RC003 firmware 2671. The investigation is
+paused; see [measurements, limitations, and shelved experiments](RC003_AUDIO_LATENCY.md).
+The experimental background queue and post-stop packet handling are not part of
+the current implementation and must not be described as confirmed fixes.
 
 On Windows, `AxonkeyService.exe` exposes a local protobuf API on
 `\\.\pipe\AxonkeyService.v1` before its device worker starts. The desktop side

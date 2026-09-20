@@ -306,6 +306,9 @@ mod authorization_tests {
     }
 }
 fn configure_stream(stream: &TcpStream) -> Result<(), String> {
+    // Windows accept() inherits the listener's nonblocking mode. Read timeouts
+    // only wait on blocking streams; otherwise both IPC readers spin when idle.
+    stream.set_nonblocking(false).map_err(|e| e.to_string())?;
     // All IPC directions carry small control/key messages. A read timeout is
     // only an idle health-check deadline; it must not become a batching delay.
     stream.set_nodelay(true).map_err(|e| e.to_string())?;
@@ -369,11 +372,34 @@ mod transport_tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let sender = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (receiver, _) = listener.accept().unwrap();
+        // Reproduce Windows' accepted-socket mode on every test platform.
+        receiver.set_nonblocking(true).unwrap();
         configure_stream(&sender).unwrap();
         configure_stream(&receiver).unwrap();
         assert!(sender.nodelay().unwrap());
         assert!(receiver.nodelay().unwrap());
         (sender, receiver)
+    }
+
+    #[test]
+    fn idle_ipc_waits_and_remains_usable_after_timeouts() {
+        let (mut sender, mut receiver) = pair();
+        let mut frames = Frames::default();
+        for _ in 0..3 {
+            let began = Instant::now();
+            assert!(frames.read(&mut receiver).unwrap().is_empty());
+            assert!(
+                began.elapsed() >= POLL / 2,
+                "idle read returned immediately instead of waiting for its timeout"
+            );
+        }
+
+        let edge = json!({"kind":"key", "usage":EXTRA_KEYS[0].0, "pressed":true});
+        send(&mut sender, &edge).unwrap();
+        assert_eq!(frames.read(&mut receiver).unwrap(), vec![edge]);
+
+        sender.shutdown(Shutdown::Both).unwrap();
+        assert!(frames.read(&mut receiver).is_err());
     }
 
     #[test]
@@ -539,8 +565,16 @@ pub fn run_helper(args: &[String]) -> Result<(), String> {
 fn capture(parent: &mut TcpStream, stop: &AtomicBool) -> Result<(), String> {
     os::debug_privilege()?;
     let (dll, auth_token) = prepare_runtime()?;
-    let server = TcpListener::bind(("127.0.0.1", gadget_port()))
-        .map_err(|_| "按键服务已被占用，请先关闭其他 Axonkey 按键采集窗口。")?;
+    let port = gadget_port();
+    // The helper runs before logging is initialized. Return the original error
+    // through IPC so the main process records it in the runtime log.
+    let server = TcpListener::bind(("127.0.0.1", port)).map_err(|error| {
+        format!(
+            "按键服务启动失败：无法监听 127.0.0.1:{port}；kind={:?}, os_error={:?}；{error}",
+            error.kind(),
+            error.raw_os_error(),
+        )
+    })?;
     server.set_nonblocking(true).map_err(|e| e.to_string())?;
     let mut injected = None;
     while !stop.load(Ordering::Relaxed) {

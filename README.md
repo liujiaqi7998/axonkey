@@ -1,16 +1,16 @@
 # Axonkey
 
-[![Release](https://img.shields.io/github/v/release/leowzz/axonkey?style=flat&color=blue)](https://github.com/leowzz/axonkey/releases/latest)
-[![Build](https://img.shields.io/github/actions/workflow/status/leowzz/axonkey/build-tag.yml?style=flat&label=build)](https://github.com/leowzz/axonkey/actions/workflows/build-tag.yml)
-[![Downloads](https://img.shields.io/github/downloads/leowzz/axonkey/total?style=flat&color=brightgreen)](https://github.com/leowzz/axonkey/releases)
-[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue?style=flat&logo=apple&logoColor=white)](#系统要求)
-[![Windows 11 x64](https://img.shields.io/badge/Windows-11%20x64-0078D4?style=flat)](#系统要求)
-[![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8D8?style=flat&logo=tauri&logoColor=white)](./src-tauri/Cargo.toml)
-[![React 18](https://img.shields.io/badge/React-18-61DAFB?style=flat&logo=react&logoColor=white)](./package.json)
+[IMG0](https://github.com/leowzz/axonkey/releases/latest)
+[IMG0](https://github.com/leowzz/axonkey/actions/workflows/build-tag.yml)
+[IMG0](https://github.com/leowzz/axonkey/releases)
+[IMG0](#系统要求)
+[IMG0](#系统要求)
+[IMG0](./src-tauri/Cargo.toml)
+[IMG0](./package.json)
 
-**[⬇ 下载 Axonkey（macOS / Windows）](https://github.com/leowzz/axonkey/releases)**
+[**⬇ 下载 Axonkey（macOS / Windows）**](https://github.com/leowzz/axonkey/releases)
 
-Axonkey 是一款支持小米 RC003 蓝牙遥控器和鼠标输入的本地映射控制台。macOS 版通过 IOKit 读取目标设备（`VID 0x2717` / `PID 0x32B8`）的原始 HID 报告，并用 CoreGraphics 与 AppKit 发送映射后的输入；Windows 版通过 Interception 过滤目标设备输入，并将 RC003 语音转发到 VB-CABLE。Windows 还提供默认关闭的 Frida 增强通道，用于读取返回和音量键。
+Axonkey 是一款支持小米蓝牙遥控器2Pro(RC003) 和鼠标输入的本地映射控制台。macOS 版通过 IOKit 读取目标设备（`VID 0x2717` / `PID 0x32B8`）的原始 HID 报告，并用 CoreGraphics 与 AppKit 发送映射后的输入；Windows 版通过 Interception 过滤目标设备输入，并将 RC003 语音转发到 VB-CABLE。Windows 还提供默认关闭的 Frida 增强通道，用于读取返回和音量键。
 
 设备与触发项独立于映射行为：可以在“映射”左侧切换小米遥控器和鼠标，并分别配置快捷键控制。Axonkey 不依赖 AutoHotkey、AutoHotInterception 或 Karabiner-Elements，配置和诊断数据均保存在本机。
 
@@ -19,21 +19,21 @@ Axonkey 是一款支持小米 RC003 蓝牙遥控器和鼠标输入的本地映�
 ### 首页
 
 <p align="center">
-  <img src="./docs/images/axonkey-home.png" width="960" alt="Axonkey 首页，展示设备状态、系统权限、语音通道和快捷操作">
+<img src="./docs/images/axonkey-home.png" width="960" alt="Axonkey 首页，展示设备状态、系统权限、语音通道和快捷操作">
 </p>
 <p align="center"><sub>设备状态、运行检查与快捷操作</sub></p>
 
 ### 总览
 
 <p align="center">
-  <img src="./docs/images/axonkey-overview.png" width="960" alt="Axonkey 总览，展示遥控器各按键的映射行为与触发方式">
+<img src="./docs/images/axonkey-overview.png" width="960" alt="Axonkey 总览，展示遥控器各按键的映射行为与触发方式">
 </p>
 <p align="center"><sub>查看各实体按键的映射行为，切换单击、双击和长按</sub></p>
 
 ### 映射
 
 <p align="center">
-  <img src="./docs/images/axonkey-mapping.png" width="960" alt="Axonkey 映射界面，显示 RC003、触发方式和行为编辑器">
+<img src="./docs/images/axonkey-mapping.png" width="960" alt="Axonkey 映射界面，显示 RC003、触发方式和行为编辑器">
 </p>
 <p align="center"><sub>选择实体按键，再分别编辑单击、双击和长按行为</sub></p>
 
@@ -141,7 +141,7 @@ Axonkey 使用 x64 `interception.dll`，因此不支持 32 位 Windows。输入�
 
 macOS 按键映射不需要安装输入驱动。未启用自定义映射，或两项权限尚未同时授予时，Axonkey 只做非独占设备监听，不会吞掉遥控器原始按键。启用映射且权限就绪后，应用会优先独占匹配的 RC003 HID 设备；如果系统不允许独占，则继续监听 HID 报告，并通过事件过滤器只拦截对应的 RC003 原始按键，再发送映射后的输入。
 
-语音转发是独立链路：Axonkey 通过 CoreBluetooth 连接 RC003 的 ATVV 语音服务，将 16 kHz IMA ADPCM 解码为 PCM，再写入 `MiRemoteV 2ch` 的输出端；豆包输入法等应用选择同名输入端即可收音。音频引擎只在语音会话期间运行，退出 Axonkey 后不会继续转发。
+语音转发是独立链路：Axonkey 通过 CoreBluetooth 连接 RC003 的 ATVV 语音服务，将 16 kHz IMA ADPCM 解码为 PCM，再写入 `MiRemoteV 2ch` 的输出端；豆包输入法等应用选择同名输入端即可收音。连接就绪后会提前准备音频输出，连续说话时复用输出链路，减少按键后的启动延迟；空闲 5 秒后暂停音频引擎，遥控器断开或退出 Axonkey 后释放输出。
 
 ## Windows 首次使用
 
@@ -356,6 +356,12 @@ Interception 存在设备断开后重新连接可能无法输入的已知问题�
 
 遇到该现象时，重启电脑即可。详细现象、原因和既有排查证据见 [Interception 重连问题说明](./docs/INTERCEPTION_HOTPLUG_INCIDENT.md)。
 
+### 长时间说话时音频延迟
+
+长时间按住 RC003 语音键连续说话时，音频可能逐渐出现延迟。目前在 macOS 上观察到约 1.8～2 秒的延迟，松开语音键时还可能丢失末尾的一部分语音。
+
+此问题尚未解决，需要完整录制长段语音时请留意这一限制。已知现象、测量结果和排查进展见 [RC003 音频延迟说明](./docs/RC003_AUDIO_LATENCY.md)。
+
 ## Interception 许可
 
 Interception 是独立的第三方组件，并采用双重许可。其上游许可允许在所列 LGPL 条款下进行非商业使用；商业分发需要向 Interception 作者取得单独授权。在取得相应许可前，请勿将包含 Interception 资源的 Axonkey 用于商业分发。
@@ -377,15 +383,3 @@ VB-CABLE 是 VB-Audio Software 提供的 Donationware。Axonkey 原样携带官�
 Axonkey 的产品灵感来自 [HD838A/remote-mic-app](https://github.com/HD838A/remote-mic-app)。macOS 原生后端参考了该项目经真机验证的 RC003 VID/PID、HID usage、ATVV 语音协议、IOKit 权限检查、CoreGraphics 键盘注入和 Core Audio 输出路径；Axonkey 仍维护独立的 Tauri 界面、设置格式、驱动构建和运行时服务。
 
 Axonkey 与 remote-mic-app 是相互独立的项目，本仓库不是其 fork。
-
-### 自动生成 Release 说明
-
-推送版本 tag 后，发布流程可使用 OpenAI Responses 兼容接口总结提交记录和 GitHub 原始 Release Notes。请在仓库 Settings → Secrets and variables → Actions 配置以下 Secrets：
-
-- `RELEASE_LLM_API_KEY`：接口密钥。
-- `RELEASE_LLM_ENDPOINT`：服务地址，支持根地址、`/v1` 或完整 `/v1/responses` 地址。
-- `RELEASE_LLM_MODEL`：服务支持的模型 ID。
-
-生成过程总计最多等待 60 秒；配置缺失、超时、请求失败或结果无效时，自动回退到 GitHub 的 `--generate-notes`，不影响安装包发布。已有 Release 只更新附件，保留原有说明。发送给模型的内容为当前版本的提交记录与 GitHub 生成的说明，不包含密钥或工作区文件内容。
-
-验证：`node --test test/release-notes.test.mjs`。
