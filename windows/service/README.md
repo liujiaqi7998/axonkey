@@ -101,23 +101,26 @@ sc.exe create AxonkeyService binPath= "C:\path\AxonkeyService.exe" start= auto o
 sc.exe start AxonkeyService
 ```
 
-也可以把 `Test-AxonkeyService.ps1` 和 `AxonkeyService.exe` 放在同一目录，
-在该目录的 PowerShell 中使用下面的命令管理服务。安装、启动、停止、重启和卸载
-会自动请求管理员权限；状态查询不需要管理员权限。
+开发验证可使用 `script/Test-AxonkeyService.ps1`，它固定管理
+`dist\AxonkeyService.exe`（CMake 默认输出目录）。不带参数进入交互菜单；
+也可传 `-Action`。安装、启动、停止、重启和卸载会自动请求管理员权限；
+状态查询不需要管理员权限。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
+cd windows\service\script
+.\Test-AxonkeyService.ps1                  # 交互菜单
+.\Test-AxonkeyService.ps1 -Action Status
 .\Test-AxonkeyService.ps1 -Action Install
 .\Test-AxonkeyService.ps1 -Action Start
-.\Test-AxonkeyService.ps1 -Action Status
 .\Test-AxonkeyService.ps1 -Action Stop
 .\Test-AxonkeyService.ps1 -Action Restart
 .\Test-AxonkeyService.ps1 -Action Uninstall
 ```
 
-`Start` 在服务还未安装时会先安装；`Install` 使用脚本同目录下的最新
-`AxonkeyService.exe`，并设置为开机自动启动。脚本不会安装 HID 或虚拟麦克风驱动，
-这些驱动需要先单独安装。
+`Start` 在服务还未安装时会先安装；`Install` 将 SCM `binPath` 指向当前
+`dist\AxonkeyService.exe`，并设置为开机自动启动（LocalSystem）。
+脚本不会安装 HID 或虚拟麦克风驱动，这些驱动需要先单独安装。
 
 服务停止时会关闭端点句柄，并解除所有已保存的 `QuarborHIDFilterDriver` 设备挂载。
 

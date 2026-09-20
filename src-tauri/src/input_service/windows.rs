@@ -20,18 +20,12 @@ const FILTER_KEY_ALL: u16 = 0xffff;
 const KEY_UP: u16 = 0x0001;
 const KEY_E0: u16 = 0x0002;
 const WAIT_TIMEOUT_MS: u32 = 50;
-// Frida edges do not wake Interception's wait handle. Poll their queue at a
-// shorter interval only while that optional capture channel is ready.
-#[cfg(windows)]
-const EXTRA_KEYS_WAIT_TIMEOUT_MS: u32 = 8;
 const LONG_PRESS_MS: u64 = 600;
 const LONG_PRESS_REPEAT_INITIAL_MS: u64 = 350;
 const LONG_PRESS_REPEAT_INTERVAL_MS: u64 = 100;
 const DOUBLE_CLICK_MS: u64 = 350;
 const REPEAT_INITIAL_MS: u64 = 500;
 const REPEAT_INTERVAL_MS: u64 = 50;
-const MEDIA_REPEAT_INITIAL_MS: u64 = 350;
-const MEDIA_REPEAT_INTERVAL_MS: u64 = 100;
 // Keep synthesized taps visible to applications that poll keyboard state.
 // Physical single-click holds already last until the remote's key-up.
 const OUTPUT_TAP_DURATION: Duration = Duration::from_millis(50);
@@ -166,8 +160,6 @@ struct Shared {
     status: Mutex<InputServiceStatus>,
     event_app: RwLock<Option<EventApp>>,
     stop: AtomicBool,
-    #[cfg(windows)]
-    extra_keys: Arc<super::windows_extra_keys::ExtraKeysService>,
 }
 
 pub struct InputService {
@@ -183,8 +175,6 @@ impl InputService {
             status: Mutex::new(InputServiceStatus::default()),
             event_app: RwLock::new(None),
             stop: AtomicBool::new(false),
-            #[cfg(windows)]
-            extra_keys: Arc::default(),
         });
         let worker_shared = Arc::clone(&shared);
         let worker = thread::Builder::new()
@@ -203,10 +193,6 @@ impl InputService {
 
     pub fn update_settings(&self, settings: NativeSettings) -> Result<(), String> {
         validate_settings(&settings)?;
-        #[cfg(windows)]
-        if !settings.enabled {
-            self.shared.extra_keys.stop();
-        }
         let behavior_count = settings
             .behaviors
             .values()
@@ -227,37 +213,7 @@ impl InputService {
         Ok(())
     }
 
-    #[cfg(windows)]
-    pub fn extra_keys_status(&self) -> super::windows_extra_keys::ExtraKeysStatus {
-        self.shared.extra_keys.status()
-    }
-
-    #[cfg(windows)]
-    pub fn set_extra_keys_enabled(&self, enabled: bool, automatic: bool) -> Result<(), String> {
-        if enabled {
-            if !self
-                .shared
-                .settings
-                .read()
-                .map_err(|_| "设置不可用")?
-                .enabled
-            {
-                return Err("请先开启自定义按键功能，再授权这三个按键。".into());
-            }
-            if automatic {
-                self.shared.extra_keys.start_automatically()
-            } else {
-                self.shared.extra_keys.start()
-            }
-        } else {
-            self.shared.extra_keys.stop();
-            Ok(())
-        }
-    }
-
     pub fn shutdown(&self) {
-        #[cfg(windows)]
-        self.shared.extra_keys.stop();
         self.shared.stop.store(true, Ordering::Relaxed);
         if let Ok(mut worker) = self.worker.lock() {
             if let Some(worker) = worker.take() {
@@ -312,25 +268,9 @@ impl SourceKey {
             repeat_interval_ms: REPEAT_INTERVAL_MS,
         }
     }
-
-    const fn with_repeat(
-        id: &'static str,
-        scan_code: u16,
-        extended: Option<bool>,
-        repeat_initial_ms: u64,
-        repeat_interval_ms: u64,
-    ) -> Self {
-        Self {
-            id,
-            scan_code,
-            extended,
-            repeat_initial_ms,
-            repeat_interval_ms,
-        }
-    }
 }
 
-const SOURCE_KEYS: [SourceKey; 13] = [
+const SOURCE_KEYS: [SourceKey; 10] = [
     SourceKey::new("voice", 0x3f, Some(false)),
     SourceKey::new("power", 0x5e, Some(true)),
     SourceKey::new("home", 0x47, None),
@@ -341,33 +281,11 @@ const SOURCE_KEYS: [SourceKey; 13] = [
     SourceKey::new("down", 0x50, None),
     SourceKey::new("left", 0x4b, None),
     SourceKey::new("right", 0x4d, None),
-    // Output equivalents only; these are never recognized from Interception input.
-    SourceKey::with_repeat(
-        "back",
-        0x6a,
-        Some(true),
-        MEDIA_REPEAT_INITIAL_MS,
-        MEDIA_REPEAT_INTERVAL_MS,
-    ),
-    SourceKey::with_repeat(
-        "volumeUp",
-        0x30,
-        Some(true),
-        MEDIA_REPEAT_INITIAL_MS,
-        MEDIA_REPEAT_INTERVAL_MS,
-    ),
-    SourceKey::with_repeat(
-        "volumeDown",
-        0x2e,
-        Some(true),
-        MEDIA_REPEAT_INITIAL_MS,
-        MEDIA_REPEAT_INTERVAL_MS,
-    ),
 ];
 
 fn source_for(stroke: KeyStroke) -> Option<SourceKey> {
     let extended = stroke.state & KEY_E0 != 0;
-    SOURCE_KEYS[..10].iter().copied().find(|source| {
+    SOURCE_KEYS.iter().copied().find(|source| {
         source.scan_code == stroke.code
             && source.extended.is_none_or(|expected| expected == extended)
     })
@@ -478,8 +396,6 @@ fn run_context(
     let mut target_device = 0;
     let mut next_probe = Instant::now();
     let mut button_states: HashMap<&'static str, ButtonState> = HashMap::new();
-    #[cfg(windows)]
-    let mut extra_generation = shared.extra_keys.drain().0;
     while !shared.stop.load(Ordering::Relaxed) {
         let now = Instant::now();
         if now >= next_probe {
@@ -518,55 +434,10 @@ fn run_context(
             next_probe = now + Duration::from_secs(1);
         }
         if target_device != 0 {
-            #[cfg(windows)]
-            {
-                let (generation, events) = shared.extra_keys.drain();
-                if generation != extra_generation {
-                    release_extra_outputs(api, context, target_device, shared, &mut button_states);
-                    extra_generation = generation;
-                }
-                for (usage, pressed) in events {
-                    if usage == 0 {
-                        release_extra_outputs(
-                            api,
-                            context,
-                            target_device,
-                            shared,
-                            &mut button_states,
-                        );
-                    } else if let Some(index) = super::extra_keys_protocol::EXTRA_KEYS
-                        .iter()
-                        .position(|k| k.0 == usage)
-                    {
-                        let source = SOURCE_KEYS[10 + index];
-                        let stroke = KeyStroke {
-                            code: source.scan_code,
-                            state: KEY_E0 | if pressed { 0 } else { KEY_UP },
-                            information: 0,
-                        };
-                        process_source_stroke(
-                            api,
-                            context,
-                            target_device,
-                            shared,
-                            &mut button_states,
-                            stroke,
-                            source,
-                        );
-                    }
-                }
-            }
             process_timers(api, context, target_device, shared, &mut button_states, now);
         }
 
-        #[cfg(not(windows))]
         let wait_timeout_ms = WAIT_TIMEOUT_MS;
-        #[cfg(windows)]
-        let wait_timeout_ms = if shared.extra_keys.is_ready() {
-            EXTRA_KEYS_WAIT_TIMEOUT_MS
-        } else {
-            WAIT_TIMEOUT_MS
-        };
         let device = unsafe { (api.wait_with_timeout)(context, wait_timeout_ms) };
         if device <= 0 {
             continue;
@@ -796,22 +667,6 @@ fn process_source_stroke(
                 release_chord(api, context, device, &press.held_outputs);
             }
             state.pending_click = None;
-        }
-        // Raw extra keys have no Windows key-up fallback if the helper disconnects.
-        // Track their synthesized default down so shutdown can always release it.
-        if SOURCE_KEYS[10..].iter().any(|key| key.id == source.id) && settings.enabled && !key_up {
-            states.entry(source.id).or_default().pressed = Some(PressState {
-                wheel_repeat: None,
-                started_at: Instant::now(),
-                last_repeat_log: Instant::now(),
-                next_repeat_at: Instant::now() + Duration::from_millis(source.repeat_initial_ms),
-                repeat_interval_ms: source.repeat_interval_ms,
-                original: stroke,
-                long_fired: false,
-                long_repeat_due_at: None,
-                passthrough_long: true,
-                held_outputs: vec![],
-            });
         }
         send_stroke(api, context, device, stroke);
         return;
@@ -1360,24 +1215,6 @@ fn release_all_held_outputs(
 #[cfg(test)]
 fn emit_remote_key_event(_shared: &Shared, _button: &'static str, _pressed: bool) {}
 
-#[cfg(windows)]
-fn release_extra_outputs(
-    api: &InterceptionApi,
-    context: Context,
-    device: i32,
-    shared: &Shared,
-    states: &mut HashMap<&'static str, ButtonState>,
-) {
-    let mut extra = HashMap::new();
-    for source in &SOURCE_KEYS[10..] {
-        if let Some(state) = states.remove(source.id) {
-            emit_remote_key_event(shared, source.id, false);
-            extra.insert(source.id, state);
-        }
-    }
-    release_all_held_outputs(api, context, device, &mut extra);
-}
-
 fn send_stroke(api: &InterceptionApi, context: Context, device: i32, stroke: KeyStroke) -> bool {
     let sent = unsafe { (api.send)(context, device, &stroke, 1) };
     let is_up = stroke.state & KEY_UP != 0;
@@ -1880,418 +1717,6 @@ mod tests {
         }))
         .is_ok());
     }
-
-    #[cfg(windows)]
-    #[test]
-    fn extra_keys_use_gestures_and_release_outputs_without_firing_pending_clicks() {
-        static SENT: Mutex<Vec<KeyStroke>> = Mutex::new(Vec::new());
-        static SENT_AT: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
-        unsafe extern "C" fn create() -> Context {
-            std::ptr::null_mut()
-        }
-        unsafe extern "C" fn destroy(_: Context) {}
-        unsafe extern "C" fn filter(_: Context, _: DevicePredicate, _: u16) {}
-        unsafe extern "C" fn wait(_: Context, _: u32) -> i32 {
-            0
-        }
-        unsafe extern "C" fn receive(_: Context, _: i32, _: *mut KeyStroke, _: u32) -> i32 {
-            0
-        }
-        unsafe extern "C" fn send(_: Context, _: i32, stroke: *const KeyStroke, _: u32) -> i32 {
-            SENT.lock().unwrap().push(*stroke);
-            SENT_AT.lock().unwrap().push(Instant::now());
-            1
-        }
-        unsafe extern "C" fn hardware(_: Context, _: i32, _: *mut u8, _: u32) -> u32 {
-            0
-        }
-        // No input APIs are called: only output conversion and recording send stubs.
-        let api = InterceptionApi {
-            _library: unsafe { libloading::Library::new("kernel32.dll").unwrap() },
-            create_context: create,
-            destroy_context: destroy,
-            set_filter: filter,
-            wait_with_timeout: wait,
-            receive,
-            send,
-            get_hardware_id: hardware,
-        };
-        let shared = Shared {
-            settings: RwLock::new(NativeSettings {
-                enabled: true,
-                ..Default::default()
-            }),
-            status: Mutex::default(),
-            event_app: RwLock::new(None),
-            stop: AtomicBool::new(false),
-            extra_keys: Arc::default(),
-        };
-        let source = SOURCE_KEYS[10];
-        let down = KeyStroke {
-            code: source.scan_code,
-            state: KEY_E0,
-            information: 0,
-        };
-        let up = KeyStroke {
-            state: KEY_E0 | KEY_UP,
-            ..down
-        };
-        assert!(
-            source_for(down).is_none(),
-            "extra key output codes must not become a second input source"
-        );
-        let mut states = HashMap::new();
-        let ctx = std::ptr::null_mut();
-        // Wheel holds emit immediately, repeat only from the timer, and never
-        // leak the original arrow down/up or emit an extra wheel on release.
-        for (button, direction, delta) in [("up", "up", 120), ("down", "down", -120)] {
-            let source = *SOURCE_KEYS
-                .iter()
-                .find(|source| source.id == button)
-                .unwrap();
-            *shared.settings.write().unwrap() = serde_json::from_value(serde_json::json!({
-                "enabled": true, "behaviors": { (button): {
-                    "click": [{"type":"wheel", "direction":direction}]
-                }}
-            }))
-            .unwrap();
-            assert!(validate_settings(&shared.settings.read().unwrap()).is_ok());
-            SENT.lock().unwrap().clear();
-            states.clear();
-            WHEEL_EVENTS.with(|events| events.borrow_mut().clear());
-            process_source_stroke(&api, ctx, 5, &shared, &mut states, down, source);
-            WHEEL_EVENTS.with(|events| assert_eq!(*events.borrow(), vec![delta]));
-            process_source_stroke(&api, ctx, 5, &shared, &mut states, down, source);
-            WHEEL_EVENTS.with(|events| assert_eq!(events.borrow().len(), 1));
-            let start = states[button].pressed.as_ref().unwrap().started_at;
-            process_timers(
-                &api,
-                ctx,
-                5,
-                &shared,
-                &mut states,
-                start + Duration::from_millis(700),
-            );
-            WHEEL_EVENTS.with(|events| assert_eq!(*events.borrow(), vec![delta, delta]));
-            process_source_stroke(&api, ctx, 5, &shared, &mut states, up, source);
-            process_timers(
-                &api,
-                ctx,
-                5,
-                &shared,
-                &mut states,
-                start + Duration::from_secs(2),
-            );
-            WHEEL_EVENTS.with(|events| assert_eq!(events.borrow().len(), 2));
-            assert!(
-                SENT.lock().unwrap().is_empty(),
-                "wheel must not leak keyboard input"
-            );
-
-            // Disabling mappings cancels a held wheel even without a release report.
-            process_source_stroke(&api, ctx, 5, &shared, &mut states, down, source);
-            shared.settings.write().unwrap().enabled = false;
-            process_timers(
-                &api,
-                ctx,
-                5,
-                &shared,
-                &mut states,
-                start + Duration::from_secs(3),
-            );
-            assert!(states.is_empty());
-            WHEEL_EVENTS.with(|events| assert_eq!(events.borrow().len(), 3));
-        }
-        shared.settings.write().unwrap().enabled = true;
-        // Single-click key mappings repeat from the timer even when the input
-        // source only reports press/release edges (as the extra-key helper does).
-        for source in &SOURCE_KEYS[10..] {
-            *shared.settings.write().unwrap() = serde_json::from_value(serde_json::json!({
-                "enabled": true,
-                "behaviors": { (source.id): {
-                    "click": [{"type":"key", "key":"Space"}]
-                }}
-            }))
-            .unwrap();
-            SENT.lock().unwrap().clear();
-            states.clear();
-            let down = KeyStroke {
-                code: source.scan_code,
-                state: KEY_E0,
-                information: 0,
-            };
-            let up = KeyStroke {
-                state: KEY_E0 | KEY_UP,
-                ..down
-            };
-            process_source_stroke(&api, ctx, 5, &shared, &mut states, down, *source);
-            let first_repeat_at = states[source.id]
-                .pressed
-                .as_ref()
-                .unwrap()
-                .next_repeat_at;
-            process_timers(
-                &api,
-                ctx,
-                5,
-                &shared,
-                &mut states,
-                first_repeat_at,
-            );
-            assert_eq!(SENT.lock().unwrap().len(), 2, "{} should repeat", source.id);
-            let second_repeat_at = states[source.id]
-                .pressed
-                .as_ref()
-                .unwrap()
-                .next_repeat_at;
-            process_timers(
-                &api,
-                ctx,
-                5,
-                &shared,
-                &mut states,
-                second_repeat_at,
-            );
-            assert_eq!(SENT.lock().unwrap().len(), 3, "{} should keep repeating", source.id);
-            process_source_stroke(&api, ctx, 5, &shared, &mut states, up, *source);
-            process_timers(
-                &api,
-                ctx,
-                5,
-                &shared,
-                &mut states,
-                second_repeat_at + Duration::from_secs(2),
-            );
-            assert_eq!(SENT.lock().unwrap().len(), 4, "{} should stop on release", source.id);
-        }
-        // Single-click-only mappings must send key-down before a release or
-        // timer tick, including when other gesture rows exist but are disabled.
-        for source in &SOURCE_KEYS[10..] {
-            for shortcut in [false, true] {
-                let click = if shortcut {
-                    serde_json::json!({"type":"shortcut", "keys":["Ctrl", "C"]})
-                } else {
-                    serde_json::json!({"type":"key", "key":"Enter"})
-                };
-                *shared.settings.write().unwrap() = serde_json::from_value(serde_json::json!({
-                    "enabled": true, "behaviors": { (source.id): {
-                        "click": [click],
-                        "doubleClick": [{"type":"key", "key":"F2", "enabled":false}],
-                        "longPress": [{"type":"key", "key":"F3", "enabled":false}]
-                    }}
-                }))
-                .unwrap();
-                SENT.lock().unwrap().clear();
-                states.clear();
-                let down = KeyStroke {
-                    code: source.scan_code,
-                    state: KEY_E0,
-                    information: 0,
-                };
-                process_source_stroke(&api, ctx, 5, &shared, &mut states, down, *source);
-                let expected = if shortcut { 2 } else { 1 };
-                assert_eq!(
-                    SENT.lock().unwrap().len(),
-                    expected,
-                    "{} must execute on down",
-                    source.id
-                );
-                assert!(SENT
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .all(|key| key.state & KEY_UP == 0));
-                assert!(states[source.id].pending_click.is_none());
-                process_source_stroke(
-                    &api,
-                    ctx,
-                    5,
-                    &shared,
-                    &mut states,
-                    KeyStroke {
-                        state: KEY_E0 | KEY_UP,
-                        ..down
-                    },
-                    *source,
-                );
-                assert_eq!(SENT.lock().unwrap().len(), expected * 2);
-            }
-        }
-        states.clear();
-        SENT.lock().unwrap().clear();
-        // A held replacement modifier is always released on disconnect.
-        shared.settings.write().unwrap().behaviors.insert(
-            "back".into(),
-            TriggerBehaviors {
-                click: vec![NativeBehavior::Key {
-                    enabled: true,
-                    key: "RAlt".into(),
-                }],
-                ..Default::default()
-            },
-        );
-        process_source_stroke(&api, ctx, 5, &shared, &mut states, down, source);
-        assert_eq!(SENT.lock().unwrap().len(), 1);
-        release_extra_outputs(&api, ctx, 5, &shared, &mut states);
-        assert_eq!(SENT.lock().unwrap().last().unwrap().state & KEY_UP, KEY_UP);
-
-        assert!(states.is_empty());
-        SENT.lock().unwrap().clear();
-        // A pending click is cancelled on disconnect; it must not become a user action.
-        shared.settings.write().unwrap().behaviors.insert(
-            "back".into(),
-            TriggerBehaviors {
-                double_click: vec![NativeBehavior::Key {
-                    enabled: true,
-                    key: "F2".into(),
-                }],
-                ..Default::default()
-            },
-        );
-        process_source_stroke(&api, ctx, 5, &shared, &mut states, down, source);
-        process_source_stroke(&api, ctx, 5, &shared, &mut states, up, source);
-        assert!(states["back"].pending_click.is_some());
-        release_extra_outputs(&api, ctx, 5, &shared, &mut states);
-        assert!(SENT.lock().unwrap().is_empty());
-        // Two taps fire the configured double click exactly once.
-        for _ in 0..2 {
-            process_source_stroke(&api, ctx, 5, &shared, &mut states, down, source);
-            process_source_stroke(&api, ctx, 5, &shared, &mut states, up, source);
-        }
-        assert_eq!(SENT.lock().unwrap().len(), 2);
-        SENT.lock().unwrap().clear();
-        states.clear();
-        // Long press is driven by timers even when HID sends no repeat reports,
-        // then repeats after a short pause until the key is released.
-        shared.settings.write().unwrap().behaviors.insert(
-            "back".into(),
-            TriggerBehaviors {
-                long_press: vec![NativeBehavior::Key {
-                    enabled: true,
-                    key: "F3".into(),
-                }],
-                ..Default::default()
-            },
-        );
-        process_source_stroke(&api, ctx, 5, &shared, &mut states, down, source);
-        states
-            .get_mut("back")
-            .unwrap()
-            .pressed
-            .as_mut()
-            .unwrap()
-            .started_at -= Duration::from_millis(650);
-        let first_long_press_at = Instant::now();
-        process_timers(
-            &api,
-            ctx,
-            5,
-            &shared,
-            &mut states,
-            first_long_press_at,
-        );
-        let first_repeat_due_at = states["back"]
-            .pressed
-            .as_ref()
-            .unwrap()
-            .long_repeat_due_at
-            .unwrap();
-        process_timers(
-            &api,
-            ctx,
-            5,
-            &shared,
-            &mut states,
-            first_repeat_due_at - Duration::from_millis(1),
-        );
-        process_timers(
-            &api,
-            ctx,
-            5,
-            &shared,
-            &mut states,
-            first_repeat_due_at,
-        );
-        process_timers(
-            &api,
-            ctx,
-            5,
-            &shared,
-            &mut states,
-            first_repeat_due_at + Duration::from_millis(LONG_PRESS_REPEAT_INTERVAL_MS),
-        );
-        process_source_stroke(&api, ctx, 5, &shared, &mut states, up, source);
-        assert_eq!(SENT.lock().unwrap().len(), 6);
-        SENT.lock().unwrap().clear();
-        states.clear();
-        // Default synthesized inputs are released too.
-        shared.settings.write().unwrap().behaviors.clear();
-        process_source_stroke(&api, ctx, 5, &shared, &mut states, down, source);
-        release_extra_outputs(&api, ctx, 5, &shared, &mut states);
-        assert_eq!(SENT.lock().unwrap().len(), 2);
-        assert_eq!(SENT.lock().unwrap().last().unwrap().state & KEY_UP, KEY_UP);
-        // Reproduce the user's mappings through JSON and the real gesture
-        // handlers for all three extra keys. A frame-polled consumer must have
-        // an opportunity to observe Esc down, not just two adjacent events.
-        for source in &SOURCE_KEYS[10..] {
-            let settings = serde_json::json!({
-                "enabled": true,
-                "behaviors": { (source.id): {
-                    "click": [{"type":"key", "key":"Space"}],
-                    "doubleClick": [{"type":"key", "key":"Esc"}],
-                    "longPress": [{"type":"key", "key":"Esc"}]
-                }}
-            });
-            *shared.settings.write().unwrap() = serde_json::from_value(settings).unwrap();
-            for long_press in [false, true] {
-                states.clear();
-                SENT.lock().unwrap().clear();
-                SENT_AT.lock().unwrap().clear();
-                let down = KeyStroke {
-                    code: source.scan_code,
-                    state: KEY_E0,
-                    information: 0,
-                };
-                let up = KeyStroke {
-                    state: KEY_E0 | KEY_UP,
-                    ..down
-                };
-                if long_press {
-                    process_source_stroke(&api, ctx, 5, &shared, &mut states, down, *source);
-                    states
-                        .get_mut(source.id)
-                        .unwrap()
-                        .pressed
-                        .as_mut()
-                        .unwrap()
-                        .started_at -= Duration::from_millis(650);
-                    process_timers(&api, ctx, 5, &shared, &mut states, Instant::now());
-                    process_source_stroke(&api, ctx, 5, &shared, &mut states, up, *source);
-                } else {
-                    for _ in 0..2 {
-                        process_source_stroke(&api, ctx, 5, &shared, &mut states, down, *source);
-                        process_source_stroke(&api, ctx, 5, &shared, &mut states, up, *source);
-                    }
-                }
-                let sent = SENT.lock().unwrap();
-                assert_eq!(
-                    sent.len(),
-                    2,
-                    "one Esc tap, without a Space click or duplicate"
-                );
-                assert_eq!(sent[0].code, 1);
-                assert_eq!(sent[0].state, 0);
-                assert_eq!(sent[1].state, KEY_UP);
-                let at = SENT_AT.lock().unwrap();
-                assert!(
-                    at[1].duration_since(at[0]) >= Duration::from_millis(16),
-                    "{} long_press={long_press}: Esc down/up collapse within one polling frame",
-                    source.id
-                );
-            }
-        }
-    }
-
     #[test]
     fn matches_real_rc003_hardware_id_variants() {
         assert!(is_target_hardware_id("HID\\VID_2717&PID_32B8"));

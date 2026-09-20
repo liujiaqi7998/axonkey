@@ -1,51 +1,9 @@
 # RC003 Windows 按键码 Demo
 
-用于采集返回、音量加、音量减的实际 Windows 输入事件，给后续单独兼容提供依据。
-**本机已验证这三个原始 HID usage 无法由 Windows 标准函数转换成扫描码。**
-普通 Windows/Interception 模式无法恢复转换阶段未生成的事件；详见
-[诊断结论与原始 usage](../../docs/WINDOWS_RC003_EXTRA_KEYS.md)。
+用于观察 Windows 为 RC003 生成的输入事件。Demo 只记录并原样放行输入，
+不安装新驱动、不注入进程，也不执行按键映射。
 
-## Frida HID 实验模式
-
-**本机已实测捕获返回 `0x00F1`、音量加 `0x0080`、音量减 `0x0081` 的按下与松开报告。**
-采集通道和设备身份边界见 [实测记录](../../docs/WINDOWS_RC003_EXTRA_KEYS.md#本机-frida-实测2026-09-09-2357)。
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\keycode-demo.ps1 -Frida
-```
-
-首次启动会从 Frida 官方发布页下载并校验固定版本 Gadget，然后请求 Windows 管理员
-权限并打开 Demo。需要本机有 **64 位 Python 3.10+**；可通过 `-PythonPath` 指定路径。
-Frida 模式跳过 Interception，使用 RC003 所在的 `WUDFHost.exe` 内部 GATT 读取旁路。
-状态出现 `attached_waiting_for_hid_io; hook_installed` 后可以按确认键、返回、音量加减；
-收到真实报告才变为 `ready; hid_io_verified`，同时显示来源校验状态。
-
-- `FRIDA_HID`：完整 9 字节报告及当前 usage 集合，保留未知码和重复报告。
-- `FRIDA_KEY`：根据相邻报告生成 `DOWN` / `UP`，并显示 usage 和已知按键名。
-- `FRIDA_RESET`：暂停/断线清空状态，不冒充实体按键的松开事件。
-- `FRIDA_ERROR`：依赖、权限、注入或设备身份检查失败；不能当成“遥控器没有事件”。
-
-同一个 WUDFHost 可以承载其他蓝牙键盘。本实验用 `QueryDosDeviceW` 解析 RC003 的
-HID 服务设备对象，并用 `NtQueryObject` 检查每次 IOCTL 的句柄。直接匹配时标记为
-`device=RC003`；本机实际观测到的是 `UMDFCtrlDev` 代理句柄，无法直接关联物理设备，
-因此这类报告严格标记为 `device=UNKNOWN scope=UMDF_PROXY_UNVERIFIED`。只记录符合
-9 字节与 `01 00 00` 前缀格式的报告，各代理分别保存按键状态。测试阶段标签和 usage
-匹配不代表已验证设备来源，不能直接将这条诊断通道用于生产环境的自动映射。
-
-点击暂停或关闭窗口会关闭接收端，Gadget 在连接关闭时解除 hook；DLL 本身仍留在系统
-宿主进程中，直到 Windows 回收该进程。不要为了清理 DLL 强制终止 WUDFHost。
-这是诊断实验，不做按键映射，也没有接入正式应用或安装新内核驱动。
-
-```powershell
-# 构建并准备运行库，不启动/注入
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\keycode-demo.ps1 -Frida -BuildOnly
-# WinForms 自检、HID 解析测试；有 Node.js 时另测 Gadget 身份过滤和解除监听
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\keycode-demo.ps1 -Frida -SelfTest
-```
-
-来源和许可见 [SOURCE.md](rc003_hid/SOURCE.md)。以下是原有普通模式的说明。
-
-## 普通 Windows / Interception 模式
+## Windows / Interception 模式
 
 独立于 Axonkey 主程序。采集时会尝试使用已有 Interception 驱动读取 RC003 原始扫描码，
 同时观察 Windows 输入事件。不安装新驱动，不需要管理员权限。

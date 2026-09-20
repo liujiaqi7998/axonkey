@@ -10,15 +10,6 @@ Windows
     -> mapping snapshot and gesture state
     -> Interception send on the same RC003 keyboard device
 
-  Optional Back / Volume +/-
-    -> explicit UAC for the native auxiliary process
-    -> pinned Frida Gadget in RC003's current WUDFHost
-    -> completed HID reads, per-handle lifetime identity
-    -> automatically acquired extra-key stream (first press forwarded)
-    -> local-only named pipe to the auxiliary process (verified PID + credential)
-    -> per-session named pipe to the normal-privilege app (verified PID + token)
-    -> the same gesture state and Interception output on RC003
-
   RC003 ATVV voice service
     -> Windows Bluetooth GATT control and audio notifications
     -> Rust frame accumulator and 16 kHz IMA ADPCM decoder
@@ -53,7 +44,7 @@ CGEventTap match from each RC003 HID edge. Only the corresponding native event
 is suppressed; generated Axonkey events carry a private marker and bypass the
 filter. This keeps native remote behavior intact during onboarding or after
 permissions are revoked. Back and Volume +/- are device-specific raw usages on
-macOS, so they enter the same mapping and gesture state machine as the other ten
+macOS, so they enter the same mapping and gesture state machine as the other
 buttons. Their preserve-original behavior emits Delete or AppKit system-volume
 events with the remote's native repeat timing.
 

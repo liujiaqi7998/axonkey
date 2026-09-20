@@ -139,7 +139,6 @@ namespace Axonkey.KeycodeDemo
         private readonly bool preview;
         private readonly bool captureOnOpen;
         private readonly InterceptionCapture interception;
-        private readonly FridaCapture frida;
         private IntPtr hook;
         private volatile string stage = "PAUSED";
         private volatile bool recording;
@@ -149,7 +148,7 @@ namespace Axonkey.KeycodeDemo
         private DateTime captureStarted;
         internal int EventCount;
 
-        internal Demo(string path, bool preview = false, bool captureOnOpen = false, bool fridaMode = false)
+        internal Demo(string path, bool preview = false, bool captureOnOpen = false)
         {
             logPath = path;
             this.preview = preview;
@@ -159,13 +158,10 @@ namespace Axonkey.KeycodeDemo
                 Interlocked.Increment(ref EventCount);
                 Write("INTERCEPTION", InterceptionCapture.Format(slot, stroke, sent));
             });
-            if (fridaMode) frida = new FridaCapture(delegate(string kind, string text) {
-                if (recording || (kind != "FRIDA_HID" && kind != "FRIDA_KEY")) Write(kind, text);
-            }, delegate { if (recording) Interlocked.Increment(ref EventCount); });
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             log = new StreamWriter(path, false, new UTF8Encoding(true));
             hookCallback = OnHook;
-            Text = "RC003 按键码诊断 · Axonkey" + (fridaMode ? " · Frida HID 实验" : "");
+            Text = "RC003 按键码诊断 · Axonkey";
             Font = new Font("Microsoft YaHei UI", 10);
             ClientSize = new Size(1180, 710);
             MinimumSize = new Size(1000, 560);
@@ -183,8 +179,7 @@ namespace Axonkey.KeycodeDemo
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-            layout.Controls.Add(new Label { Dock = DockStyle.Fill, Text = fridaMode ?
-                "Frida HID 原始报告实验：先看下方连接状态，再测试返回、音量加减，也可按确认键作对照。\n完整报告和按下／松开事件会自动保存；此 Demo 仅观察，按键原有功能仍可能执行。" :
+            layout.Controls.Add(new Label { Dock = DockStyle.Fill, Text =
                 "先从托盘退出 Axonkey。先点“全部按键”测试确认键和普通键盘，再分别测试返回、音量加减。\n按键会继续执行原功能；保持窗口在前台。观察下方驱动状态与事件计数，日志会自动保存。", AutoSize = false }, 0, 0);
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
             AddButton(buttons, "全部按键 / 对照", delegate { StartCapture("ALL / 全部按键对照"); });
@@ -206,7 +201,7 @@ namespace Axonkey.KeycodeDemo
             status.Text = "已暂停 · 点击一个测试按钮开始；按键会继续执行原来的系统功能。";
             layout.Controls.Add(status, 0, 2);
             inputStatus.Dock = DockStyle.Fill;
-            inputStatus.Text = fridaMode ? "Frida HID：暂停 · 报告 0 / 全部事件 0" : "Interception：暂停 · 驱动事件 0 / 全部事件 0";
+            inputStatus.Text = "Interception：暂停 · 驱动事件 0 / 全部事件 0";
             layout.Controls.Add(inputStatus, 0, 3);
             output.Multiline = true;
             output.ReadOnly = true;
@@ -220,9 +215,7 @@ namespace Axonkey.KeycodeDemo
             Application.AddMessageFilter(this);
             timer.Interval = 100;
             timer.Tick += delegate {
-                if (frida != null) frida.RefreshStatus();
-                inputStatus.Text = frida != null ? frida.Status + " · 报告 " + frida.Events + " / 全部事件 " + EventCount :
-                    interception.Status + " · 驱动事件 " + interception.Events + " / 全部事件 " + EventCount;
+                inputStatus.Text = interception.Status + " · 驱动事件 " + interception.Events + " / 全部事件 " + EventCount;
                 if (recording && EventCount == captureStartCount && (DateTime.Now - captureStarted).TotalSeconds >= 8)
                     status.Text = "本阶段尚无按键事件。请先按遥控器确认键，再按普通键盘 A 作对照。";
                 FlushPending();
@@ -231,7 +224,6 @@ namespace Axonkey.KeycodeDemo
             Write("INFO", "Started " + DateTimeOffset.Now.ToString("o") + "; OS=" + Environment.OSVersion + "; pointerBytes=" + IntPtr.Size);
             Write("INFO", "RAW_KEYBOARD / RAW_HID have device identity when Windows provides it; LL_KEYBOARD / APP_COMMAND do not.");
             Write("INFO", "Stage is a manual label, NOT proof of device origin. Interception forwards original strokes unchanged; no remapping.");
-            if (fridaMode) Write("INFO", "FRIDA MODE: Interception capture is disabled. Native HID usage values are recorded before keyboard translation.");
         }
 
         private static void AddButton(FlowLayoutPanel panel, string text, EventHandler handler)
@@ -360,7 +352,7 @@ namespace Axonkey.KeycodeDemo
             captureStartCount = EventCount;
             captureStarted = DateTime.Now;
             Write("MARK", "Capture started. Press and release only the button named in this stage.");
-            if (!preview) { if (frida != null) frida.Start(); else interception.Start(); }
+            if (!preview) interception.Start();
             status.Text = "正在采集：" + label + " · 每个按键按 2–3 次，再切换到下一项。";
             output.Focus();
         }
@@ -370,7 +362,6 @@ namespace Axonkey.KeycodeDemo
             if (recording) Write("MARK", "Capture paused.");
             recording = false;
             interception.Stop();
-            if (frida != null) frida.Stop();
             stage = "PAUSED";
             status.Text = "已暂停 · 日志已保存，可复制或切换测试按键继续。";
             FlushPending();
@@ -498,7 +489,7 @@ namespace Axonkey.KeycodeDemo
             while (pending.TryDequeue(out line)) batch.AppendLine(line);
             string text = batch.ToString();
             try { log.Write(text); log.Flush(); }
-            catch (IOException error) { recording = false; interception.Stop(); if (frida != null) frida.Stop(); status.Text = "日志写入失败，采集已暂停：" + error.Message; }
+            catch (IOException error) { recording = false; interception.Stop(); status.Text = "日志写入失败，采集已暂停：" + error.Message; }
             if (output.TextLength > 500000) output.Clear(); // Full history stays in the file.
             output.AppendText(text);
         }
@@ -510,7 +501,6 @@ namespace Axonkey.KeycodeDemo
                 stopped = true;
                 recording = false;
                 interception.Dispose();
-                if (frida != null) frida.Dispose();
                 Application.RemoveMessageFilter(this);
                 if (hook != IntPtr.Zero) Native.UnhookWindowsHookEx(hook);
                 hook = IntPtr.Zero;
@@ -553,8 +543,7 @@ namespace Axonkey.KeycodeDemo
             {
                 string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Axonkey", "diagnostics", "keycodes");
                 string path = Path.Combine(folder, DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + Process.GetCurrentProcess().Id + ".log");
-                using (var demo = new Demo(path, false, Array.IndexOf(args, "--capture") >= 0,
-                    Array.IndexOf(args, "--frida") >= 0)) Application.Run(demo);
+                using (var demo = new Demo(path, false, Array.IndexOf(args, "--capture") >= 0)) Application.Run(demo);
                 return 0;
             }
             catch (Exception error) { MessageBox.Show(error.ToString(), "RC003 按键诊断启动失败"); return 1; }
