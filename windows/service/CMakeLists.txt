@@ -29,6 +29,19 @@ target_compile_definitions(AxonkeyService PRIVATE UNICODE _UNICODE WIN32_LEAN_AN
 target_include_directories(AxonkeyService PRIVATE ../driver/shared/include ../../protobuf)
 target_link_libraries(AxonkeyService PRIVATE Setupapi Cfgmgr32 Advapi32 ServiceLogging)
 
+# Keep service artifacts next to the sources so the desktop packaging step can
+# consume a stable directory without knowing the CMake build directory.
+set(SERVICE_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dist")
+set_target_properties(ServiceLogging AxonkeyService PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${SERVICE_DIST_DIR}"
+  LIBRARY_OUTPUT_DIRECTORY "${SERVICE_DIST_DIR}"
+  ARCHIVE_OUTPUT_DIRECTORY "${SERVICE_DIST_DIR}")
+if(MSVC)
+  set_target_properties(AxonkeyService PROPERTIES
+    PDB_OUTPUT_DIRECTORY "${SERVICE_DIST_DIR}"
+    COMPILE_PDB_OUTPUT_DIRECTORY "${SERVICE_DIST_DIR}")
+endif()
+
 file(GLOB CPPWINRT_INCLUDE_DIRS
   "C:/Program Files (x86)/Windows Kits/10/Include/*/cppwinrt")
 list(SORT CPPWINRT_INCLUDE_DIRS ORDER DESCENDING)
