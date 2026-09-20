@@ -4,15 +4,6 @@
 
 安装器管理 HID 键盘过滤驱动和虚拟麦克风驱动，两者作为一次整体操作处理。支持 Windows x64，平台基线沿用仓库配置。
 
-构建项目位于 `application/QuarborAxonkeyDriverInstaller/QuarborAxonkeyDriverInstaller.vcxproj`，可执行文件为 **QuarborAxonkeyDriverInstaller.exe**。输出目录采用项目名：
-
-```text
-artifacts/bin/x64/Release/QuarborAxonkeyDriverInstaller/QuarborAxonkeyDriverInstaller.exe
-artifacts/bin/x64/Debug/QuarborAxonkeyDriverInstaller/QuarborAxonkeyDriverInstaller.exe
-```
-
-发布时使用 `QuarborAxonkeyDriverInstaller.exe`。驱动包名、服务名、设备 ID 和重启保护注册表键继续使用 Quarbor，保证与已安装驱动兼容；跨会话并发锁使用管理员控制的 `%ProgramFiles%\Axonkey\QuarborDriverInstaller.lock`。
-
 需要安装的签名驱动包与 EXE 放在同一目录；路径按 EXE 位置解析，不依赖调用者工作目录：
 
 ```text
@@ -186,26 +177,3 @@ Console.WriteLine($"ExitCode={process.ExitCode}, Result={report.RootElement}");
 
 使用 Win32 时同样采用 `CreateProcessW`、继承 stdout 管道、读取输出并等待进程，再调用 `GetExitCodeProcess`。不要使用不等待的 Shell 启动结果代替安装结果。
 
-## 7. 实现结构与验证
-
-- `Main.cpp`：Windows 参数拆分、权限、界面提权、Program Files 文件锁、非交互 SetupAPI 范围、文件/stdout 输出和进程退出码。
-- `InstallerCommandLine.h/.cpp`：严格参数校验、可注入后端的静默调度和 JSON 序列化。
-- `InstallerWindow.cpp`：`initialAction` 在窗口首次创建时自动启动，页面语言导航不重跑动作。
-- `WindowsInstaller.cpp`：复用 `InstallAll` / `UninstallAll` 和原有重启保护；另设 `ReadWindowsInstallerStatus`，只读取保护记录和 Windows 状态，不创建/清除保护记录。
-- `VirtualMicrophoneSetup.cpp`：静默绑定时附加 `INSTALLFLAG_NONINTERACTIVE`。
-
-构建：在 Visual Studio 开发者 PowerShell 中执行：
-
-```powershell
-MSBuild application\QuarborAxonkeyDriverInstaller\QuarborAxonkeyDriverInstaller.vcxproj /p:Configuration=Release /p:Platform=x64
-MSBuild application\QuarborAxonkeyDriverInstaller\tests\DriverInstallerTests.vcxproj /p:Configuration=Debug /p:Platform=x64
-.\artifacts\bin\x64\Debug\DriverInstallerTests\DriverInstallerTests.exe --ui-auto
-powershell -NoProfile -ExecutionPolicy Bypass -File .\application\QuarborAxonkeyDriverInstaller\tests\Test-CommandLine.ps1 `
-    -InstallerPath .\artifacts\bin\x64\Release\QuarborAxonkeyDriverInstaller\QuarborAxonkeyDriverInstaller.exe
-```
-
-自动化覆盖参数冲突、动作只执行一次、无点击自动开始、语言切换、成功/失败/重启/保护阻止、部分查询失败、未知状态、JSON 转义和 UTF-8、中文输出路径、真实进程退出码、输出预检失败及并发互斥。普通权限运行进程测试时还验证静默安装/卸载返回 `740`；管理员运行时跳过这两项，防止改动真实驱动。现有工作流测试继续覆盖中断保护、卸载顺序和安装阶段重启边界。
-
-自动测试中的安装/卸载后端均为模拟实现，真实进程测试只运行只读或预检失败路径。签名驱动的实际安装、卸载、设备占用、重启恢复和 SYSTEM/Session 0 部署，需要在专用 Windows 测试机上进行生命周期验收：安装并查询、重复安装、卸载并查询、待重启时重试应被阻止、重启后查询/继续安装，以及不可信签名下的静默失败。
-
-本次开发验证（2026-09-19）：Debug / Release x64 安装器构建通过，Debug 工作流/命令行单元测试及 `--ui-auto` 自动界面测试通过，Release EXE 真实进程测试通过（包含普通权限的 `740` 路径）。未在开发机执行真实驱动安装、卸载或重启。
