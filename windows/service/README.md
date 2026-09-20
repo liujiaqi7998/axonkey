@@ -81,6 +81,10 @@ PCM，再写入虚拟麦克风。虚拟麦克风已被其他语音线程占用�
 `SetAudioGain`、`GetDevices`、`GetVoiceStatus`、`GetAudioLevel` 查询或控制服务，
 并通过 `Subscribe` 订阅 `keyboard`、`audio_level`、`voice_status` 事件。键盘报告来自
 已挂载并拦截输入的 Quarbor 端点，音频电平来自增益处理后的 PCM 样本。
+
+每个 RPC 客户端都有独立的出站发送线程；请求响应和事件先进入有界队列，再由该线程
+按顺序写入管道。单次写入超过 2 秒会被取消，队列超过 256 帧或 4 MiB 也会主动断开
+客户端，因此不读取管道的用户态客户端不会阻塞服务线程或持续占用内存。
 在 Visual Studio Developer PowerShell 中执行：
 
 ```powershell

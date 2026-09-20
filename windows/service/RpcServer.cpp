@@ -4,12 +4,17 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 
 namespace axonkey_service {
 namespace {
 using axonkey::rpc::Bytes;
 constexpr std::uint32_t kMaxFrame = 1024 * 1024;
+constexpr std::size_t kMaxQueuedFrames = 256;
+constexpr std::size_t kMaxQueuedBytes = 4 * 1024 * 1024;
+constexpr auto kWriteTimeout = std::chrono::seconds(2);
 
 struct FrameHeader { std::uint32_t size; };
 
@@ -54,19 +59,190 @@ std::uint64_t NowMs() {
 
 struct RpcServer::Client {
     explicit Client(HANDLE value) : pipe(value) {}
+
+    ~Client() {
+        // A Client is normally destroyed after ClientLoop has joined both
+        // worker threads. Keep this defensive for failed thread startup too.
+        Close();
+        JoinWorkers();
+        ClosePipeHandles();
+    }
+
+    bool Start() noexcept {
+        try {
+            senderThread = std::thread(&Client::SenderLoop, this);
+            watchdogThread = std::thread(&Client::WatchdogLoop, this);
+            return true;
+        } catch (...) {
+            Close();
+            JoinWorkers();
+            return false;
+        }
+    }
+
+    bool Enqueue(Bytes frame) {
+        if (frame.size() > kMaxFrame) return false;
+        bool overLimit = false;
+        {
+            std::lock_guard lock(queueMutex);
+            if (closed.load()) return false;
+            overLimit = outbound.size() >= kMaxQueuedFrames ||
+                queuedBytes > kMaxQueuedBytes - frame.size();
+            if (!overLimit) {
+                queuedBytes += frame.size();
+                outbound.push_back(std::move(frame));
+            }
+        }
+        if (overLimit) {
+            LogMessage(L"Axonkey RPC client outbound queue limit reached; disconnecting",
+                LogLevel::Warning);
+            Close();
+            return false;
+        }
+        queueCv.notify_one();
+        return true;
+    }
+
     void Close() {
-        if (closed.exchange(true)) return;
+        closed.store(true);
+        {
+            std::lock_guard lock(queueMutex);
+            outbound.clear();
+            queuedBytes = 0;
+        }
+        queueCv.notify_all();
+        writeStateCv.notify_all();
         if (pipe != INVALID_HANDLE_VALUE) {
             CancelIoEx(pipe, nullptr);
             DisconnectNamedPipe(pipe);
-            CloseHandle(pipe);
-            pipe = INVALID_HANDLE_VALUE;
         }
     }
+
+    void JoinWorkers() {
+        if (senderThread.joinable()) senderThread.join();
+        if (watchdogThread.joinable()) watchdogThread.join();
+        HANDLE writerHandle = nullptr;
+        {
+            std::lock_guard lock(writeStateMutex);
+            writerHandle = writerThreadHandle;
+            writerThreadHandle = nullptr;
+        }
+        if (writerHandle) CloseHandle(writerHandle);
+    }
+
+    void ClosePipeHandles() {
+        auto handle = pipe;
+        pipe = INVALID_HANDLE_VALUE;
+        if (handle != INVALID_HANDLE_VALUE) {
+            CancelIoEx(handle, nullptr);
+            DisconnectNamedPipe(handle);
+            CloseHandle(handle);
+        }
+    }
+
+private:
+    void SenderLoop() {
+        HANDLE duplicatedThread = nullptr;
+        if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
+                &duplicatedThread, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+            LogMessage(L"Axonkey RPC sender thread handle could not be duplicated; disconnecting",
+                LogLevel::Error);
+            Close();
+            return;
+        }
+        {
+            std::lock_guard lock(writeStateMutex);
+            writerThreadHandle = duplicatedThread;
+        }
+        writeStateCv.notify_all();
+
+        for (;;) {
+            Bytes frame;
+            {
+                std::unique_lock lock(queueMutex);
+                queueCv.wait(lock, [this] { return closed.load() || !outbound.empty(); });
+                if (outbound.empty()) break;
+                frame = std::move(outbound.front());
+                outbound.pop_front();
+                queuedBytes -= frame.size();
+            }
+
+            if (closed.load()) break;
+            {
+                std::lock_guard lock(writeStateMutex);
+                if (closed.load()) break;
+                writeInProgress = true;
+                writeDeadline = std::chrono::steady_clock::now() + kWriteTimeout;
+                writeTimedOut.store(false);
+            }
+            writeStateCv.notify_all();
+            const bool written = WriteFrame(pipe, frame);
+            {
+                std::lock_guard lock(writeStateMutex);
+                writeInProgress = false;
+            }
+            writeStateCv.notify_all();
+            if (!written) {
+                if (writeTimedOut.exchange(false)) {
+                    LogMessage(L"Axonkey RPC client write timed out; disconnecting",
+                        LogLevel::Warning);
+                }
+                Close();
+                break;
+            }
+        }
+        {
+            std::lock_guard lock(writeStateMutex);
+            writeInProgress = false;
+        }
+        writeStateCv.notify_all();
+    }
+
+    void WatchdogLoop() {
+        std::unique_lock lock(writeStateMutex);
+        while (!closed.load()) {
+            if (!writerThreadHandle || !writeInProgress) {
+                writeStateCv.wait(lock, [this] {
+                    return closed.load() || (writerThreadHandle && writeInProgress);
+                });
+                continue;
+            }
+            const auto deadline = writeDeadline;
+            if (writeStateCv.wait_until(lock, deadline, [this, deadline] {
+                    return closed.load() || !writeInProgress || writeDeadline != deadline;
+                })) continue;
+            if (closed.load() || !writeInProgress) continue;
+
+            // Keep writeStateMutex while cancelling. SenderLoop cannot mark
+            // this write complete or start another one until cancellation is
+            // targeted at the same operation.
+            writeTimedOut.store(true);
+            CancelSynchronousIo(writerThreadHandle);
+            CancelIoEx(pipe, nullptr);
+            writeStateCv.wait(lock, [this] {
+                return closed.load() || !writeInProgress;
+            });
+        }
+    }
+
+public:
     HANDLE pipe = INVALID_HANDLE_VALUE;
     std::atomic_bool closed = false;
-    std::mutex writeMutex;
     std::atomic_bool keyboard = false, audioLevel = false, voiceStatus = false;
+
+private:
+    std::mutex queueMutex;
+    std::condition_variable queueCv;
+    std::deque<Bytes> outbound;
+    std::size_t queuedBytes = 0;
+    std::thread senderThread;
+    std::thread watchdogThread;
+    std::mutex writeStateMutex;
+    std::condition_variable writeStateCv;
+    HANDLE writerThreadHandle = nullptr;
+    std::chrono::steady_clock::time_point writeDeadline{};
+    bool writeInProgress = false;
+    std::atomic_bool writeTimedOut = false;
 };
 
 RpcServer::RpcServer(RpcHandlers handlers) : handlers_(std::move(handlers)) {}
@@ -131,6 +307,10 @@ void RpcServer::Stop() {
     std::vector<std::thread> clientThreads;
     clientThreads.swap(clientThreads_);
     for (auto& thread : clientThreads) if (thread.joinable()) thread.join();
+    for (const auto& client : clients) {
+        client->JoinWorkers();
+        client->ClosePipeHandles();
+    }
     if (stopEvent_) CloseHandle(stopEvent_);
     stopEvent_ = nullptr;
 }
@@ -162,6 +342,13 @@ void RpcServer::AcceptLoop() {
             break;
         }
         auto client = std::make_shared<Client>(pipe);
+        if (!client->Start()) {
+            LogMessage(L"Starting Axonkey RPC client workers failed; disconnecting",
+                LogLevel::Error);
+            client->ClosePipeHandles();
+            pipe = nextPipe;
+            continue;
+        }
         {
             std::lock_guard lock(clientsMutex_);
             clients_.push_back(client);
@@ -173,8 +360,10 @@ void RpcServer::AcceptLoop() {
 }
 
 void RpcServer::RemoveClient(const std::shared_ptr<Client>& client) {
-    std::lock_guard lock(clientsMutex_);
-    clients_.erase(std::remove(clients_.begin(), clients_.end(), client), clients_.end());
+    {
+        std::lock_guard lock(clientsMutex_);
+        clients_.erase(std::remove(clients_.begin(), clients_.end(), client), clients_.end());
+    }
     client->Close();
 }
 
@@ -218,8 +407,7 @@ void RpcServer::ClientLoop(const std::shared_ptr<Client>& client) {
             else response.error = "invalid Subscribe protobuf payload";
         } else { response.error = "unknown Axonkey RPC method"; }
         if (!response.success && response.error.empty()) response.error = "request failed";
-        std::lock_guard lock(client->writeMutex);
-        if (!WriteFrame(client->pipe, axonkey::rpc::Serialize(response))) break;
+        if (!client->Enqueue(axonkey::rpc::Serialize(response))) break;
         if (updateSubscription) {
             client->keyboard = subscribeKeyboard;
             client->audioLevel = subscribeAudioLevel;
@@ -227,15 +415,27 @@ void RpcServer::ClientLoop(const std::shared_ptr<Client>& client) {
         }
     }
     RemoveClient(client);
+    client->JoinWorkers();
+    client->ClosePipeHandles();
 }
 
 void RpcServer::Publish(const axonkey::rpc::EventEnvelope& event, int kind) {
     const auto bytes = axonkey::rpc::Serialize(event);
-    std::lock_guard lock(clientsMutex_);
-    for (const auto& client : clients_) {
-        if ((kind == 1 && !client->keyboard) || (kind == 2 && !client->audioLevel) || (kind == 3 && !client->voiceStatus)) continue;
-        std::lock_guard writeLock(client->writeMutex);
-        if (!WriteFrame(client->pipe, bytes)) { DisconnectNamedPipe(client->pipe); }
+    std::vector<std::shared_ptr<Client>> targets;
+    {
+        std::lock_guard lock(clientsMutex_);
+        for (const auto& client : clients_) {
+            if ((kind == 1 && !client->keyboard) ||
+                    (kind == 2 && !client->audioLevel) ||
+                    (kind == 3 && !client->voiceStatus)) continue;
+            targets.push_back(client);
+        }
+    }
+    for (const auto& client : targets) {
+        // Enqueue is bounded and never performs pipe I/O. A slow or stuck
+        // client is disconnected by the client worker without blocking the
+        // service thread that produced this event.
+        client->Enqueue(bytes);
     }
 }
 

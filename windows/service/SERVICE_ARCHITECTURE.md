@@ -12,7 +12,7 @@
 1. 一个服务协调线程，周期性枚举 RC003 HID 键盘、挂载过滤器并维护连接。
 2. 每个 HID 端点一个重叠 I/O 读取线程，读取原始 HID 报告并屏蔽 Windows 原始输入。
 3. 每个 RC003 设备一个 C++/WinRT GATT 语音线程，接收 ATVV 音频并写入虚拟麦克风。
-4. 一个命名管道 RPC 接收线程，以及每个 RPC 客户端一个处理线程。
+4. 一个命名管道 RPC 接收线程，以及每个 RPC 客户端一个请求线程、一个发送线程和一个写超时监视线程。
 
 服务不直接实现内核驱动，而是通过 `SetupAPI/CfgMgr32` 管理
 `QuarborHIDFilterDriver`，通过 `DeviceIoControl` 使用 HID 过滤驱动和虚拟麦克风驱动。
@@ -227,8 +227,10 @@ RPC 端点固定为 `\\.\pipe\AxonkeyService.v1`，定义在 [`RpcServer.h:27`](
 - `CreatePipe()`：[`RpcServer.cpp:75`](RpcServer.cpp#L75)，创建无限实例、字节流模式的双向管道；ACL 允许 SYSTEM、管理员和已认证用户。
 - `Start()`：[`RpcServer.cpp:94`](RpcServer.cpp#L94)，先同步验证第一个管道实例，再启动 accept 线程。
 - `AcceptLoop()`：[`RpcServer.cpp:138`](RpcServer.cpp#L138)，接受连接后先创建下一个监听实例，再为当前客户端创建线程，减少客户端看到 `ERROR_PIPE_BUSY` 的窗口。
-- `ClientLoop()`：[`RpcServer.cpp:181`](RpcServer.cpp#L181)，解析请求并调用 `RpcHandlers`；支持 `GetServiceInfo`、`SetAudioGain`、`GetDevices`、`GetVoiceStatus`、`GetAudioLevel`、`Subscribe`。
-- `Publish()`：[`RpcServer.cpp:232`](RpcServer.cpp#L232)，按订阅标志向客户端广播 `keyboard`、`audio_level`、`voice_status` 事件。
+- `ClientLoop()`：解析请求并调用 `RpcHandlers`；响应只进入该客户端的出站队列，不在请求线程中同步写 Pipe。
+- `Client::SenderLoop()`：每个连接独立的发送线程，按入队顺序串行写入响应和事件，保证 `Subscribe` 响应先于首个事件。
+- `Client::WatchdogLoop()`：监视当前同步写入，超过 2 秒调用 `CancelSynchronousIo`/`CancelIoEx`，随后断开无响应客户端。
+- `Publish()`：只复制订阅客户端快照并入队，不持有全局客户端锁执行 I/O；单客户端队列最多 256 帧或 4 MiB，超过即断开慢客户端。
 
 `Service::Run()` 在 [`main.cpp:216`](main.cpp#L216) 把 RPC handler 绑定到服务状态：
 
@@ -282,7 +284,8 @@ RPC 端点固定为 `\\.\pipe\AxonkeyService.v1`，定义在 [`RpcServer.h:27`](
 | `Endpoint::ReadLoop()` | 等待并读取 HID 报告 | 取消重叠 I/O 后必须 `CancelAndDrain()` 再释放资源 |
 | GATT `ValueChanged` 回调 | 拷贝数据、入队 | 不解码、不写虚拟麦克风，队列溢出要终止连接 |
 | `VoiceReceiver::Run()` | GATT 初始化、事件消费、协议处理、清理 | WinRT apartment 只在该线程初始化/反初始化 |
-| RPC accept/client 线程 | 读写命名管道和 handler 调用 | 客户端写入受 `writeMutex` 保护，发布者不能绕过帧协议 |
+| RPC accept/client 线程 | 接受连接、读取请求和调用 handler | 响应只入有界出站队列；不在请求线程或全局客户端锁中执行 Pipe 写入 |
+| RPC client sender/watchdog 线程 | 串行发送响应/事件、取消超时写入 | 单次写入超过 2 秒或队列超过 256 帧/4 MiB 即断开客户端 |
 | 虚拟麦克风 `Push()` | 查询状态、回绕拷贝、提交数据 | 250 ms 无空闲空间即失败，停止时支持取消 |
 
 主要的“失败后自愈”策略是：`Worker()` 每 2 秒重试 `Reconcile()`；失败的 HID reader 会将
