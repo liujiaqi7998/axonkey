@@ -46,7 +46,22 @@ if(MSVC)
 endif()
 
 include(CTest)
-if(BUILD_TESTING)
+set(SERVICE_TEST_SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/ServiceLogTests.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/GattAccessTests.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/VoiceAudioTests.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/RpcProtocolTests.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/VirtualMicrophoneProbe.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/TestLog.cpp")
+set(SERVICE_TESTS_AVAILABLE TRUE)
+foreach(SERVICE_TEST_SOURCE IN LISTS SERVICE_TEST_SOURCES)
+  if(NOT EXISTS "${SERVICE_TEST_SOURCE}")
+    set(SERVICE_TESTS_AVAILABLE FALSE)
+    break()
+  endif()
+endforeach()
+
+if(BUILD_TESTING AND SERVICE_TESTS_AVAILABLE)
   add_executable(ServiceLogTests tests/ServiceLogTests.cpp)
   target_compile_features(ServiceLogTests PRIVATE cxx_std_20)
   target_compile_definitions(ServiceLogTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -98,6 +113,10 @@ if(BUILD_TESTING)
   if(MSVC)
     target_compile_options(VirtualMicrophoneProbe PRIVATE /W4 /permissive- /utf-8)
   endif()
+elseif(BUILD_TESTING)
+  message(WARNING
+    "Service tests are enabled but their source files are missing; "
+    "skipping service test targets")
 endif()
 
 # MinGW's SetupAPI headers omit these class-property constants although the
