@@ -5,6 +5,9 @@ package axonkey.service.v1;
 // The service is exposed through the local Windows named pipe
 // \\.\pipe\AxonkeyService.v1. Each frame is a little-endian uint32 length
 // followed by one of the protobuf messages below.
+//
+// Request / Response are the pipe envelopes. Method names match the RPC
+// names in the service block; payload carries the corresponding message.
 service AxonkeyService {
   rpc GetServiceInfo(ServiceInfoRequest) returns (ServiceInfo);
   rpc SetAudioGain(SetAudioGainRequest) returns (OperationResult);
@@ -12,6 +15,20 @@ service AxonkeyService {
   rpc GetVoiceStatus(VoiceStatusRequest) returns (VoiceStatus);
   rpc GetAudioLevel(AudioLevelRequest) returns (AudioLevel);
   rpc Subscribe(SubscribeRequest) returns (OperationResult);
+}
+
+// Named-pipe call envelope (not gRPC HTTP/2).
+message Request {
+  uint64 request_id = 1;
+  string method = 2;
+  bytes payload = 3;
+}
+
+message Response {
+  uint64 request_id = 1;
+  bool success = 2;
+  string error = 3;
+  bytes payload = 4;
 }
 
 message ServiceInfoRequest {}

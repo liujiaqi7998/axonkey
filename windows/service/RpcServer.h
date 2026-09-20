@@ -19,9 +19,9 @@ struct RpcHandlers {
     std::function<axonkey::rpc::AudioLevel()> audioLevel;
 };
 
-// A small dependency-free protobuf transport for the Windows service. The
-// protobuf schema and wire codec live under /protobuf; this class only owns
-// the local named-pipe transport and dispatches requests to the service.
+// Named-pipe protobuf transport for the Windows service. Schema and nanopb
+// codec live under /protobuf (axonkey_rpc + generated pb); this class owns
+// framing, client sessions, and request dispatch only.
 class RpcServer final {
 public:
     static constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\AxonkeyService.v1";

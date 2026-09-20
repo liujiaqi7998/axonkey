@@ -76,8 +76,10 @@ PCM，再写入虚拟麦克风。虚拟麦克风已被其他语音线程占用�
 ## 本地 protobuf RPC
 
 服务启动后先创建 `\\.\pipe\AxonkeyService.v1`，再启动设备扫描线程。管道帧由 4
-字节小端长度和 `protobuf/axonkey_service.proto` 定义的 proto3 消息组成；服务内置的
-无依赖编解码器位于 `protobuf/axonkey_rpc.*`。桌面端可通过 `GetServiceInfo`、
+字节小端长度和 `protobuf/axonkey_service.proto` 定义的 proto3 消息组成；编解码由
+[nanopb](https://github.com/nanopb/nanopb) 0.4.9（CMake `FetchContent` 钉版本）
+完成，C++ 封装位于 `protobuf/axonkey_rpc.*`，生成代码在 `protobuf/generated/`。
+桌面端可通过 `GetServiceInfo`、
 `SetAudioGain`、`GetDevices`、`GetVoiceStatus`、`GetAudioLevel` 查询或控制服务，
 并通过 `Subscribe` 订阅 `keyboard`、`audio_level`、`voice_status` 事件。键盘报告来自
 已挂载并拦截输入的 Quarbor 端点，音频电平来自增益处理后的 PCM 样本。

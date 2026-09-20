@@ -1,0 +1,31 @@
+# nanopb field options for axonkey.service.v1
+# Variable-length strings/bytes use callbacks so the C++ wrapper can bind
+# std::string / std::vector without fixed stack buffers or a 1 MiB payload array.
+
+axonkey.service.v1.Request.method                  type:FT_CALLBACK
+axonkey.service.v1.Request.payload                 type:FT_CALLBACK
+
+axonkey.service.v1.Response.error                  type:FT_CALLBACK
+axonkey.service.v1.Response.payload                type:FT_CALLBACK
+
+axonkey.service.v1.ServiceInfo.name                type:FT_CALLBACK
+axonkey.service.v1.ServiceInfo.version             type:FT_CALLBACK
+axonkey.service.v1.ServiceInfo.protocol_version    type:FT_CALLBACK
+axonkey.service.v1.ServiceInfo.pipe_name           type:FT_CALLBACK
+
+axonkey.service.v1.OperationResult.error           type:FT_CALLBACK
+
+axonkey.service.v1.Device.instance_id              type:FT_CALLBACK
+axonkey.service.v1.Device.endpoint_path            type:FT_CALLBACK
+
+# Few physical RC003 keyboards are attached at once.
+axonkey.service.v1.DeviceList.devices              max_count:16
+
+axonkey.service.v1.VoiceStatus.state                type:FT_CALLBACK
+axonkey.service.v1.VoiceStatus.device_instance_id  type:FT_CALLBACK
+
+axonkey.service.v1.KeyboardEvent.device_instance_id type:FT_CALLBACK
+axonkey.service.v1.KeyboardEvent.report            type:FT_CALLBACK
+
+axonkey.service.v1.Event.type                      type:FT_CALLBACK
+axonkey.service.v1.Event.payload                   type:FT_CALLBACK

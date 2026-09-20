@@ -1,51 +1,364 @@
 #include "axonkey_rpc.h"
+
+#include "axonkey_service.pb.h"
+#include <pb_decode.h>
+#include <pb_encode.h>
+
 #include <cstring>
+#include <limits>
 
 namespace axonkey::rpc {
 namespace {
-void Varint(Bytes& out, std::uint64_t value) { while (value > 0x7f) { out.push_back(static_cast<std::uint8_t>(value) | 0x80); value >>= 7; } out.push_back(static_cast<std::uint8_t>(value)); }
-void Key(Bytes& out, std::uint32_t field, std::uint8_t wire) { Varint(out, (static_cast<std::uint64_t>(field) << 3) | wire); }
-void U64(Bytes& out, std::uint32_t field, std::uint64_t value) { Key(out, field, 0); Varint(out, value); }
-void Bool(Bytes& out, std::uint32_t field, bool value) { U64(out, field, value ? 1 : 0); }
-void I32(Bytes& out, std::uint32_t field, std::int32_t value) { U64(out, field, static_cast<std::uint64_t>(static_cast<std::int64_t>(value))); }
-void Raw(Bytes& out, std::uint32_t field, const std::uint8_t* data, size_t size) { Key(out, field, 2); Varint(out, size); out.insert(out.end(), data, data + size); }
-void Str(Bytes& out, std::uint32_t field, const std::string& value) { Raw(out, field, reinterpret_cast<const std::uint8_t*>(value.data()), value.size()); }
-void Msg(Bytes& out, std::uint32_t field, const Bytes& value) { Raw(out, field, value.data(), value.size()); }
-void F32(Bytes& out, std::uint32_t field, float value) { Key(out, field, 5); std::uint32_t bits; std::memcpy(&bits, &value, sizeof(bits)); for (int i = 0; i < 4; ++i) out.push_back(static_cast<std::uint8_t>(bits >> (8 * i))); }
 
-class Reader {
-public:
-    explicit Reader(const Bytes& bytes) : data_(bytes.data()), size_(bytes.size()) {}
-    bool Next(std::uint32_t& field, std::uint8_t& wire) { std::uint64_t key; if (!Var(key)) return false; field = static_cast<std::uint32_t>(key >> 3); wire = static_cast<std::uint8_t>(key & 7); return field != 0; }
-    bool Var(std::uint64_t& value) { value = 0; for (unsigned shift = 0; shift < 64; shift += 7) { if (pos_ >= size_) return false; auto byte = data_[pos_++]; value |= static_cast<std::uint64_t>(byte & 0x7f) << shift; if (!(byte & 0x80)) return true; } return false; }
-    bool Length(Bytes& value) { std::uint64_t length; if (!Var(length) || length > size_ - pos_) return false; value.assign(data_ + pos_, data_ + pos_ + length); pos_ += static_cast<size_t>(length); return true; }
-    bool String(std::string& value) { Bytes raw; if (!Length(raw)) return false; value.assign(reinterpret_cast<const char*>(raw.data()), raw.size()); return true; }
-    bool Skip(std::uint8_t wire) { switch (wire) { case 0: { std::uint64_t ignored; return Var(ignored); } case 1: if (size_ - pos_ < 8) return false; pos_ += 8; return true; case 2: { Bytes ignored; return Length(ignored); } case 5: if (size_ - pos_ < 4) return false; pos_ += 4; return true; default: return false; } }
-    bool Float(float& value) { if (size_ - pos_ < 4) return false; std::uint32_t bits = data_[pos_] | (static_cast<std::uint32_t>(data_[pos_ + 1]) << 8) | (static_cast<std::uint32_t>(data_[pos_ + 2]) << 16) | (static_cast<std::uint32_t>(data_[pos_ + 3]) << 24); pos_ += 4; std::memcpy(&value, &bits, sizeof(value)); return true; }
-private: const std::uint8_t* data_; size_t size_, pos_ = 0;
-};
+// Named-pipe frames are capped at 1 MiB in RpcServer; reject oversized fields.
+constexpr size_t kMaxFieldBytes = 1024 * 1024;
 
-template<class Fn> bool Read(const Bytes& bytes, Fn&& fn) { Reader reader(bytes); std::uint32_t field; std::uint8_t wire; while (reader.Next(field, wire)) if (!fn(reader, field, wire)) return false; return true; }
-bool ReadText(Reader& r, std::uint8_t wire, std::string& value) { return wire == 2 && r.String(value); }
-bool ReadBytes(Reader& r, std::uint8_t wire, Bytes& value) { return wire == 2 && r.Length(value); }
-bool ReadVar(Reader& r, std::uint8_t wire, std::uint64_t& value) { return wire == 0 && r.Var(value); }
+bool DecodeString(pb_istream_t* stream, const pb_field_t* /*field*/, void** arg) {
+    auto* out = static_cast<std::string*>(*arg);
+    const size_t length = stream->bytes_left;
+    if (length > kMaxFieldBytes) return false;
+    out->resize(length);
+    return length == 0 || pb_read(stream, reinterpret_cast<pb_byte_t*>(out->data()), length);
 }
 
-bool Parse(const Bytes& bytes, Request& v) { return Read(bytes, [&](Reader& r, auto f, auto w) { if (f == 1) { std::uint64_t x; if (!ReadVar(r,w,x)) return false; v.requestId=x; return true; } if (f == 2) return ReadText(r,w,v.method); if (f == 3) return ReadBytes(r,w,v.payload); return r.Skip(w); }); }
-bool Parse(const Bytes& bytes, SetAudioGain& v) { return Read(bytes, [&](Reader& r, auto f, auto w) { if (f == 1) { std::uint64_t x; if (!ReadVar(r,w,x)) return false; v.gainDb=static_cast<std::int32_t>(x); return true; } return r.Skip(w); }); }
-bool Parse(const Bytes& bytes, Subscribe& v) { return Read(bytes, [&](Reader& r, auto f, auto w) { if (f >= 1 && f <= 3) { std::uint64_t x; if (!ReadVar(r,w,x)) return false; bool b=x != 0; if (f==1)v.keyboard=b; if(f==2)v.audioLevel=b; if(f==3)v.voiceStatus=b; return true; } return r.Skip(w); }); }
-bool Parse(const Bytes& bytes, DeviceList& v) { return Read(bytes, [&](Reader& r, auto f, auto w) { if (f != 1) return r.Skip(w); Bytes raw; if (!ReadBytes(r,w,raw)) return false; Device d; if (!Read(raw,[&](Reader& rr,auto ff,auto ww){ if(ff==1)return ReadText(rr,ww,d.instanceId); if(ff==2)return ReadText(rr,ww,d.endpointPath); if(ff>=3&&ff<=6){std::uint64_t x;if(!ReadVar(rr,ww,x))return false; if(ff==3)d.driverMounted=x; if(ff==4)d.inputBlocked=x; if(ff==5)d.dataForwardEnabled=x; if(ff==6)d.connected=x; return true;} return rr.Skip(ww); })) return false; v.devices.push_back(std::move(d)); return true; }); }
-bool Parse(const Bytes& bytes, VoiceStatus& v) { return Read(bytes, [&](Reader& r,auto f,auto w){if(f==1)return ReadText(r,w,v.state);if(f==2)return ReadText(r,w,v.deviceInstanceId);if(f>=3&&f<=7){std::uint64_t x;if(!ReadVar(r,w,x))return false;if(f==3)v.connected=x;if(f==4)v.active=x;if(f==5)v.microphoneOpen=x;if(f==6)v.protocolVersion=static_cast<std::uint32_t>(x);if(f==7)v.sessionId=static_cast<std::uint32_t>(x);return true;}return r.Skip(w);}); }
-bool Parse(const Bytes& bytes, AudioLevel& v) { return Read(bytes, [&](Reader& r,auto f,auto w){if(f==1)return w==5&&r.Float(v.peak);if(f==2)return w==5&&r.Float(v.rms);if(f==3){std::uint64_t x;if(!ReadVar(r,w,x))return false;v.timestampMs=x;return true;}return r.Skip(w);}); }
-bool Parse(const Bytes& bytes, KeyboardEvent& v) { return Read(bytes, [&](Reader& r,auto f,auto w){if(f==1)return ReadText(r,w,v.deviceInstanceId);if(f==2)return ReadBytes(r,w,v.report);if(f==3){std::uint64_t x;if(!ReadVar(r,w,x))return false;v.timestampMs=x;return true;}return r.Skip(w);}); }
-
-Bytes Serialize(const Request& v){Bytes o;U64(o,1,v.requestId);Str(o,2,v.method);if(!v.payload.empty())Msg(o,3,v.payload);return o;}
-Bytes Serialize(const Response& v){Bytes o;U64(o,1,v.requestId);Bool(o,2,v.success);if(!v.error.empty())Str(o,3,v.error);if(!v.payload.empty())Msg(o,4,v.payload);return o;}
-Bytes Serialize(const EventEnvelope& v){Bytes o;Str(o,1,v.type);if(!v.payload.empty())Msg(o,2,v.payload);return o;}
-Bytes Serialize(const ServiceInfo& v){Bytes o;Str(o,1,v.name);Str(o,2,v.version);Str(o,3,v.protocolVersion);Str(o,4,v.pipeName);return o;}
-Bytes Serialize(const OperationResult& v){Bytes o;Bool(o,1,v.success);if(!v.error.empty())Str(o,2,v.error);return o;}
-Bytes Serialize(const DeviceList& v){Bytes o;for(const auto& d:v.devices){Bytes x;Str(x,1,d.instanceId);Str(x,2,d.endpointPath);Bool(x,3,d.driverMounted);Bool(x,4,d.inputBlocked);Bool(x,5,d.dataForwardEnabled);Bool(x,6,d.connected);Msg(o,1,x);}return o;}
-Bytes Serialize(const VoiceStatus& v){Bytes o;Str(o,1,v.state);Str(o,2,v.deviceInstanceId);Bool(o,3,v.connected);Bool(o,4,v.active);Bool(o,5,v.microphoneOpen);U64(o,6,v.protocolVersion);U64(o,7,v.sessionId);return o;}
-Bytes Serialize(const AudioLevel& v){Bytes o;F32(o,1,v.peak);F32(o,2,v.rms);U64(o,3,v.timestampMs);return o;}
-Bytes Serialize(const KeyboardEvent& v){Bytes o;Str(o,1,v.deviceInstanceId);if(!v.report.empty())Raw(o,2,v.report.data(),v.report.size());U64(o,3,v.timestampMs);return o;}
+bool EncodeString(pb_ostream_t* stream, const pb_field_t* field, void* const* arg) {
+    const auto* value = static_cast<const std::string*>(*arg);
+    if (value->empty()) return true;
+    if (!pb_encode_tag_for_field(stream, field)) return false;
+    return pb_encode_string(stream, reinterpret_cast<const pb_byte_t*>(value->data()), value->size());
 }
+
+bool DecodeBytes(pb_istream_t* stream, const pb_field_t* /*field*/, void** arg) {
+    auto* out = static_cast<Bytes*>(*arg);
+    const size_t length = stream->bytes_left;
+    if (length > kMaxFieldBytes) return false;
+    out->resize(length);
+    return length == 0 || pb_read(stream, out->data(), length);
+}
+
+bool EncodeBytes(pb_ostream_t* stream, const pb_field_t* field, void* const* arg) {
+    const auto* value = static_cast<const Bytes*>(*arg);
+    if (value->empty()) return true;
+    if (!pb_encode_tag_for_field(stream, field)) return false;
+    return pb_encode_string(stream, value->data(), value->size());
+}
+
+void BindString(pb_callback_t& callback, std::string& value) {
+    callback.funcs.decode = DecodeString;
+    callback.arg = &value;
+}
+
+void BindStringEncode(pb_callback_t& callback, const std::string& value) {
+    callback.funcs.encode = EncodeString;
+    callback.arg = const_cast<std::string*>(&value);
+}
+
+void BindBytes(pb_callback_t& callback, Bytes& value) {
+    callback.funcs.decode = DecodeBytes;
+    callback.arg = &value;
+}
+
+void BindBytesEncode(pb_callback_t& callback, const Bytes& value) {
+    callback.funcs.encode = EncodeBytes;
+    callback.arg = const_cast<Bytes*>(&value);
+}
+
+template <typename Msg, typename BindFn>
+bool DecodeMessage(const Bytes& bytes, const pb_msgdesc_t* fields, Msg& msg, BindFn&& bind) {
+    msg = {};
+    bind(msg);
+    pb_istream_t stream = pb_istream_from_buffer(
+        bytes.empty() ? nullptr : bytes.data(), bytes.size());
+    return pb_decode(&stream, fields, &msg);
+}
+
+template <typename Msg, typename BindFn>
+Bytes EncodeMessage(const pb_msgdesc_t* fields, Msg& msg, BindFn&& bind) {
+    bind(msg);
+    size_t size = 0;
+    if (!pb_get_encoded_size(&size, fields, &msg)) return {};
+    Bytes out(size);
+    pb_ostream_t stream = pb_ostream_from_buffer(out.empty() ? nullptr : out.data(), out.size());
+    if (!pb_encode(&stream, fields, &msg)) return {};
+    out.resize(stream.bytes_written);
+    return out;
+}
+
+bool DecodeDevice(pb_istream_t* stream, const pb_field_t* /*field*/, void** arg) {
+    auto* devices = static_cast<std::vector<Device>*>(*arg);
+    if (devices->size() >= 16) return false;
+    Device device;
+    axonkey_service_v1_Device msg = axonkey_service_v1_Device_init_zero;
+    BindString(msg.instance_id, device.instanceId);
+    BindString(msg.endpoint_path, device.endpointPath);
+    if (!pb_decode(stream, axonkey_service_v1_Device_fields, &msg)) return false;
+    device.driverMounted = msg.driver_mounted;
+    device.inputBlocked = msg.input_blocked;
+    device.dataForwardEnabled = msg.data_forward_enabled;
+    device.connected = msg.connected;
+    devices->push_back(std::move(device));
+    return true;
+}
+
+bool EncodeDevice(pb_ostream_t* stream, const pb_field_t* field, void* const* arg) {
+    const auto* devices = static_cast<const std::vector<Device>*>(*arg);
+    for (const auto& device : *devices) {
+        if (!pb_encode_tag_for_field(stream, field)) return false;
+        axonkey_service_v1_Device msg = axonkey_service_v1_Device_init_zero;
+        BindStringEncode(msg.instance_id, device.instanceId);
+        BindStringEncode(msg.endpoint_path, device.endpointPath);
+        msg.driver_mounted = device.driverMounted;
+        msg.input_blocked = device.inputBlocked;
+        msg.data_forward_enabled = device.dataForwardEnabled;
+        msg.connected = device.connected;
+        if (!pb_encode_submessage(stream, axonkey_service_v1_Device_fields, &msg)) return false;
+    }
+    return true;
+}
+
+} // namespace
+
+bool Parse(const Bytes& bytes, Request& value) {
+    value = {};
+    axonkey_service_v1_Request msg = axonkey_service_v1_Request_init_zero;
+    if (!DecodeMessage(bytes, axonkey_service_v1_Request_fields, msg, [&](auto& m) {
+            BindString(m.method, value.method);
+            BindBytes(m.payload, value.payload);
+        })) return false;
+    value.requestId = msg.request_id;
+    return true;
+}
+
+bool Parse(const Bytes& bytes, Response& value) {
+    value = {};
+    axonkey_service_v1_Response msg = axonkey_service_v1_Response_init_zero;
+    if (!DecodeMessage(bytes, axonkey_service_v1_Response_fields, msg, [&](auto& m) {
+            BindString(m.error, value.error);
+            BindBytes(m.payload, value.payload);
+        })) return false;
+    value.requestId = msg.request_id;
+    value.success = msg.success;
+    return true;
+}
+
+bool Parse(const Bytes& bytes, SetAudioGain& value) {
+    value = {};
+    axonkey_service_v1_SetAudioGainRequest msg = axonkey_service_v1_SetAudioGainRequest_init_zero;
+    pb_istream_t stream = pb_istream_from_buffer(
+        bytes.empty() ? nullptr : bytes.data(), bytes.size());
+    if (!pb_decode(&stream, axonkey_service_v1_SetAudioGainRequest_fields, &msg)) return false;
+    value.gainDb = msg.gain_db;
+    return true;
+}
+
+bool Parse(const Bytes& bytes, Subscribe& value) {
+    value = {};
+    axonkey_service_v1_SubscribeRequest msg = axonkey_service_v1_SubscribeRequest_init_zero;
+    pb_istream_t stream = pb_istream_from_buffer(
+        bytes.empty() ? nullptr : bytes.data(), bytes.size());
+    if (!pb_decode(&stream, axonkey_service_v1_SubscribeRequest_fields, &msg)) return false;
+    value.keyboard = msg.keyboard;
+    value.audioLevel = msg.audio_level;
+    value.voiceStatus = msg.voice_status;
+    return true;
+}
+
+bool Parse(const Bytes& bytes, DeviceList& value) {
+    value = {};
+    axonkey_service_v1_DeviceList msg = axonkey_service_v1_DeviceList_init_zero;
+    msg.devices.funcs.decode = DecodeDevice;
+    msg.devices.arg = &value.devices;
+    pb_istream_t stream = pb_istream_from_buffer(
+        bytes.empty() ? nullptr : bytes.data(), bytes.size());
+    return pb_decode(&stream, axonkey_service_v1_DeviceList_fields, &msg);
+}
+
+bool Parse(const Bytes& bytes, VoiceStatus& value) {
+    value = {};
+    axonkey_service_v1_VoiceStatus msg = axonkey_service_v1_VoiceStatus_init_zero;
+    if (!DecodeMessage(bytes, axonkey_service_v1_VoiceStatus_fields, msg, [&](auto& m) {
+            BindString(m.state, value.state);
+            BindString(m.device_instance_id, value.deviceInstanceId);
+        })) return false;
+    value.connected = msg.connected;
+    value.active = msg.active;
+    value.microphoneOpen = msg.microphone_open;
+    value.protocolVersion = msg.protocol_version;
+    value.sessionId = msg.session_id;
+    return true;
+}
+
+bool Parse(const Bytes& bytes, AudioLevel& value) {
+    value = {};
+    axonkey_service_v1_AudioLevel msg = axonkey_service_v1_AudioLevel_init_zero;
+    pb_istream_t stream = pb_istream_from_buffer(
+        bytes.empty() ? nullptr : bytes.data(), bytes.size());
+    if (!pb_decode(&stream, axonkey_service_v1_AudioLevel_fields, &msg)) return false;
+    value.peak = msg.peak;
+    value.rms = msg.rms;
+    value.timestampMs = msg.timestamp_ms;
+    return true;
+}
+
+bool Parse(const Bytes& bytes, KeyboardEvent& value) {
+    value = {};
+    axonkey_service_v1_KeyboardEvent msg = axonkey_service_v1_KeyboardEvent_init_zero;
+    if (!DecodeMessage(bytes, axonkey_service_v1_KeyboardEvent_fields, msg, [&](auto& m) {
+            BindString(m.device_instance_id, value.deviceInstanceId);
+            BindBytes(m.report, value.report);
+        })) return false;
+    value.timestampMs = msg.timestamp_ms;
+    return true;
+}
+
+bool Parse(const Bytes& bytes, EventEnvelope& value) {
+    value = {};
+    axonkey_service_v1_Event msg = axonkey_service_v1_Event_init_zero;
+    return DecodeMessage(bytes, axonkey_service_v1_Event_fields, msg, [&](auto& m) {
+        BindString(m.type, value.type);
+        BindBytes(m.payload, value.payload);
+    });
+}
+
+bool Parse(const Bytes& bytes, ServiceInfo& value) {
+    value = {};
+    axonkey_service_v1_ServiceInfo msg = axonkey_service_v1_ServiceInfo_init_zero;
+    return DecodeMessage(bytes, axonkey_service_v1_ServiceInfo_fields, msg, [&](auto& m) {
+        BindString(m.name, value.name);
+        BindString(m.version, value.version);
+        BindString(m.protocol_version, value.protocolVersion);
+        BindString(m.pipe_name, value.pipeName);
+    });
+}
+
+bool Parse(const Bytes& bytes, OperationResult& value) {
+    value = {};
+    axonkey_service_v1_OperationResult msg = axonkey_service_v1_OperationResult_init_zero;
+    if (!DecodeMessage(bytes, axonkey_service_v1_OperationResult_fields, msg, [&](auto& m) {
+            BindString(m.error, value.error);
+        })) return false;
+    value.success = msg.success;
+    return true;
+}
+
+Bytes Serialize(const Request& value) {
+    axonkey_service_v1_Request msg = axonkey_service_v1_Request_init_zero;
+    msg.request_id = value.requestId;
+    return EncodeMessage(axonkey_service_v1_Request_fields, msg, [&](auto& m) {
+        BindStringEncode(m.method, value.method);
+        BindBytesEncode(m.payload, value.payload);
+    });
+}
+
+Bytes Serialize(const Response& value) {
+    axonkey_service_v1_Response msg = axonkey_service_v1_Response_init_zero;
+    msg.request_id = value.requestId;
+    msg.success = value.success;
+    return EncodeMessage(axonkey_service_v1_Response_fields, msg, [&](auto& m) {
+        BindStringEncode(m.error, value.error);
+        BindBytesEncode(m.payload, value.payload);
+    });
+}
+
+Bytes Serialize(const EventEnvelope& value) {
+    axonkey_service_v1_Event msg = axonkey_service_v1_Event_init_zero;
+    return EncodeMessage(axonkey_service_v1_Event_fields, msg, [&](auto& m) {
+        BindStringEncode(m.type, value.type);
+        BindBytesEncode(m.payload, value.payload);
+    });
+}
+
+Bytes Serialize(const ServiceInfo& value) {
+    axonkey_service_v1_ServiceInfo msg = axonkey_service_v1_ServiceInfo_init_zero;
+    return EncodeMessage(axonkey_service_v1_ServiceInfo_fields, msg, [&](auto& m) {
+        BindStringEncode(m.name, value.name);
+        BindStringEncode(m.version, value.version);
+        BindStringEncode(m.protocol_version, value.protocolVersion);
+        BindStringEncode(m.pipe_name, value.pipeName);
+    });
+}
+
+Bytes Serialize(const OperationResult& value) {
+    axonkey_service_v1_OperationResult msg = axonkey_service_v1_OperationResult_init_zero;
+    msg.success = value.success;
+    return EncodeMessage(axonkey_service_v1_OperationResult_fields, msg, [&](auto& m) {
+        BindStringEncode(m.error, value.error);
+    });
+}
+
+Bytes Serialize(const DeviceList& value) {
+    axonkey_service_v1_DeviceList msg = axonkey_service_v1_DeviceList_init_zero;
+    msg.devices.funcs.encode = EncodeDevice;
+    msg.devices.arg = const_cast<std::vector<Device>*>(&value.devices);
+    size_t size = 0;
+    if (!pb_get_encoded_size(&size, axonkey_service_v1_DeviceList_fields, &msg)) return {};
+    Bytes out(size);
+    pb_ostream_t stream = pb_ostream_from_buffer(out.empty() ? nullptr : out.data(), out.size());
+    if (!pb_encode(&stream, axonkey_service_v1_DeviceList_fields, &msg)) return {};
+    out.resize(stream.bytes_written);
+    return out;
+}
+
+Bytes Serialize(const VoiceStatus& value) {
+    axonkey_service_v1_VoiceStatus msg = axonkey_service_v1_VoiceStatus_init_zero;
+    msg.connected = value.connected;
+    msg.active = value.active;
+    msg.microphone_open = value.microphoneOpen;
+    msg.protocol_version = value.protocolVersion;
+    msg.session_id = value.sessionId;
+    return EncodeMessage(axonkey_service_v1_VoiceStatus_fields, msg, [&](auto& m) {
+        BindStringEncode(m.state, value.state);
+        BindStringEncode(m.device_instance_id, value.deviceInstanceId);
+    });
+}
+
+Bytes Serialize(const AudioLevel& value) {
+    axonkey_service_v1_AudioLevel msg = axonkey_service_v1_AudioLevel_init_zero;
+    msg.peak = value.peak;
+    msg.rms = value.rms;
+    msg.timestamp_ms = value.timestampMs;
+    size_t size = 0;
+    if (!pb_get_encoded_size(&size, axonkey_service_v1_AudioLevel_fields, &msg)) return {};
+    Bytes out(size);
+    pb_ostream_t stream = pb_ostream_from_buffer(out.empty() ? nullptr : out.data(), out.size());
+    if (!pb_encode(&stream, axonkey_service_v1_AudioLevel_fields, &msg)) return {};
+    out.resize(stream.bytes_written);
+    return out;
+}
+
+Bytes Serialize(const KeyboardEvent& value) {
+    axonkey_service_v1_KeyboardEvent msg = axonkey_service_v1_KeyboardEvent_init_zero;
+    msg.timestamp_ms = value.timestampMs;
+    return EncodeMessage(axonkey_service_v1_KeyboardEvent_fields, msg, [&](auto& m) {
+        BindStringEncode(m.device_instance_id, value.deviceInstanceId);
+        BindBytesEncode(m.report, value.report);
+    });
+}
+
+Bytes Serialize(const SetAudioGain& value) {
+    axonkey_service_v1_SetAudioGainRequest msg = axonkey_service_v1_SetAudioGainRequest_init_zero;
+    msg.gain_db = value.gainDb;
+    size_t size = 0;
+    if (!pb_get_encoded_size(&size, axonkey_service_v1_SetAudioGainRequest_fields, &msg)) return {};
+    Bytes out(size);
+    pb_ostream_t stream = pb_ostream_from_buffer(out.empty() ? nullptr : out.data(), out.size());
+    if (!pb_encode(&stream, axonkey_service_v1_SetAudioGainRequest_fields, &msg)) return {};
+    out.resize(stream.bytes_written);
+    return out;
+}
+
+Bytes Serialize(const Subscribe& value) {
+    axonkey_service_v1_SubscribeRequest msg = axonkey_service_v1_SubscribeRequest_init_zero;
+    msg.keyboard = value.keyboard;
+    msg.audio_level = value.audioLevel;
+    msg.voice_status = value.voiceStatus;
+    size_t size = 0;
+    if (!pb_get_encoded_size(&size, axonkey_service_v1_SubscribeRequest_fields, &msg)) return {};
+    Bytes out(size);
+    pb_ostream_t stream = pb_ostream_from_buffer(out.empty() ? nullptr : out.data(), out.size());
+    if (!pb_encode(&stream, axonkey_service_v1_SubscribeRequest_fields, &msg)) return {};
+    out.resize(stream.bytes_written);
+    return out;
+}
+
+} // namespace axonkey::rpc

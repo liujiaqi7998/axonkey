@@ -214,7 +214,7 @@ flowchart LR
 ## 6. 本地 RPC 框架
 
 RPC 端点固定为 `\\.\pipe\AxonkeyService.v1`，定义在 [`RpcServer.h:27`](RpcServer.h#L27)。
-它不是 gRPC 运行时，而是“protobuf 消息 + 自定义长度帧 + Windows named pipe”：
+它不是 gRPC 运行时，而是“nanopb 编解码的 protobuf 消息 + 自定义长度帧 + Windows named pipe”：
 
 ```text
 ┌──────────────┬──────────────────────────────┐
@@ -267,13 +267,11 @@ RPC 端点固定为 `\\.\pipe\AxonkeyService.v1`，定义在 [`RpcServer.h:27`](
 `CMakeLists.txt` 的关键边界：
 
 - `ServiceLogging` 静态库：[`CMakeLists.txt:13`](CMakeLists.txt#L13)，只包含 `ServiceLog.cpp`。
-- `AxonkeyService` 可执行文件：[`CMakeLists.txt:21`](CMakeLists.txt#L21)，C++20，依赖 SetupAPI、CfgMgr32、Advapi32、Windows Runtime、OLE32、Shell32 和 shared driver helper。
-- C++/WinRT 头从 Windows SDK 的 `cppwinrt` 目录查找：[`CMakeLists.txt:32`](CMakeLists.txt#L32)。
-- Debug symbols：MSVC 下通过 `/Zi` 和 `/DEBUG` 生成 PDB：[`CMakeLists.txt:41`](CMakeLists.txt#L41)。
-
-审阅当前工作树时，`CMakeLists.txt` 引用了 `../../protobuf/axonkey_rpc.cpp` 和 `../../protobuf`，
-但仓库当前目录中没有看到 `protobuf` 目录；同时测试目标引用的 `windows/service/tests` 也未出现在当前目录列表中。
-这不改变服务运行框架的判断，但会影响在这份工作树上直接配置 CMake。构建前需要恢复对应的 protobuf 编解码器和测试源。
+- `AxonkeyRpc` 静态库：nanopb 运行时 + `protobuf/axonkey_rpc.cpp` + `protobuf/generated/axonkey_service.pb.c`。
+- `AxonkeyService` 可执行文件：C++20，依赖 SetupAPI、CfgMgr32、Advapi32、Windows Runtime、OLE32、Shell32、`AxonkeyRpc` 和 shared driver helper。
+- C++/WinRT 头从 Windows SDK 的 `cppwinrt` 目录查找。
+- Debug symbols：MSVC 下通过 `/Zi` 和 `/DEBUG` 生成 PDB。
+- `axonkey_rpc_tests`：编解码往返与经典 wire 兼容性测试（`ctest`）。
 
 ## 8. 线程、锁和错误处理要点
 
