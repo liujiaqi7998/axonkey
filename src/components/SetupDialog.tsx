@@ -1,3 +1,4 @@
+import { useRef, useState } from 'react'
 import {
   AudioLines,
   Bluetooth,
@@ -16,8 +17,11 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
+import { WindowsServiceLog } from './WindowsServiceLog'
+import { WindowsServiceControl } from './WindowsServiceControl'
+import type { WindowsServiceAction, WindowsServiceStatus, WindowsServiceLog as ServiceLogSnapshot } from '../windowsService'
 import type { DriverActionKind, DriverKind, SetupState, SetupStepId } from '../setupModel'
-import { driverDefinitions, isSetupComplete } from '../setupModel'
+import { isSetupComplete } from '../setupModel'
 import type { MacPermissionKind, MacPermissions, Platform } from '../appTypes'
 
 type SetupDialogProps = {
@@ -31,12 +35,14 @@ type SetupDialogProps = {
   onSkipAll: () => void
   onReset: () => void
   onDriverAction: (driver: DriverKind, action: DriverActionKind) => void
-  onSkipDriverAction: (driver: DriverKind, action: DriverActionKind) => void
-  onMarkDriverInstalled: (driver: DriverKind) => void
+  onInstallDriver: () => Promise<void>
+  nativeRuntime: boolean
+  onQueryService: () => Promise<WindowsServiceStatus>
+  onReadServiceLog: () => Promise<ServiceLogSnapshot>
+  onServiceAction: (action: WindowsServiceAction) => Promise<WindowsServiceStatus>
   onProbeAudio: () => void
   onOpenSystemSettings: (page: 'bluetooth' | 'sound' | MacPermissionKind) => void
   onRequestMacPermission: (kind: MacPermissionKind) => void
-  onOpenExternalPage: (page: 'vbcable') => void
   onCheckDevice: () => void
   onMarkDeviceConnected: () => void
   onFinish: () => void
@@ -57,7 +63,7 @@ const macSetupStepLabels: Record<SetupStepId, string> = {
 const windowsSetupSteps: SetupStepId[] = ['welcome', 'inputDriver', 'deviceConnection', 'complete']
 const macSetupSteps: SetupStepId[] = ['inputDriver', 'deviceConnection']
 
-export function SetupDialog({ platform, macPermissions, state, onClose, onOpenStep, onCompleteStep, onSkipStep, onSkipAll, onReset, onDriverAction, onSkipDriverAction, onMarkDriverInstalled, onProbeAudio, onOpenSystemSettings, onRequestMacPermission, onOpenExternalPage, onCheckDevice, onMarkDeviceConnected, onFinish }: SetupDialogProps) {
+export function SetupDialog({ platform, macPermissions, state, onClose, onOpenStep, onCompleteStep, onSkipStep, onSkipAll, onReset, onDriverAction, onInstallDriver, nativeRuntime, onQueryService, onReadServiceLog, onServiceAction, onProbeAudio, onOpenSystemSettings, onRequestMacPermission, onCheckDevice, onMarkDeviceConnected, onFinish }: SetupDialogProps) {
   const step = state.currentStep
   const setupStepLabels = platform === 'macos' ? macSetupStepLabels : windowsSetupStepLabels
   const visibleSteps = platform === 'macos' ? macSetupSteps : windowsSetupSteps
@@ -86,15 +92,14 @@ export function SetupDialog({ platform, macPermissions, state, onClose, onOpenSt
           <h2 id="setup-title">{platform === 'macos' ? '准备好权限与遥控器' : '准备好驱动与遥控器'}</h2>
           <p className="setup-lead">{platform === 'macos'
             ? '整个过程只在本机完成。Axonkey 需要读取 RC003 输入并向当前应用发送映射后的按键。'
-            : '整个过程只在本机完成。两个驱动将在同一页依次安装，全部完成后只需重启 Windows 一次。'}</p>
-          <div className="setup-summary-grid">
+            : '先安装驱动和后台服务，再通过蓝牙连接遥控器，即可开始配置按键映射。'}</p>
+          <div className={`setup-summary-grid ${platform === 'macos' ? '' : 'windows-setup-summary'}`}>
             {platform === 'macos' ? <>
               <div><Keyboard size={18} /><strong>输入监控</strong><span>仅监听目标 RC003 的 HID 报告</span></div>
               <div><Command size={18} /><strong>辅助功能</strong><span>发送映射后的按键与文本</span></div>
               <div><Bluetooth size={18} /><strong>连接 RC003</strong><span>通过 macOS 蓝牙配对并唤醒</span></div>
             </> : <>
-              <div><Keyboard size={18} /><strong>按键拦截</strong><span>安装经过校验的 Interception 驱动</span></div>
-              <div><AudioLines size={18} /><strong>CABLE 虚拟麦克风</strong><span>安装经过校验的 VB-Audio 官方驱动</span></div>
+              <div><ShieldCheck size={18} /><strong>安装驱动</strong><span>安装专用驱动与后台服务</span></div>
               <div><Bluetooth size={18} /><strong>连接 RC003</strong><span>通过 Windows 蓝牙配对并唤醒</span></div>
             </>}
           </div>
@@ -112,15 +117,13 @@ export function SetupDialog({ platform, macPermissions, state, onClose, onOpenSt
             onSkip={onSkipStep}
           />
           : <DriversSetupScreen
-            state={state}
-            onAction={onDriverAction}
-            onSkipAction={onSkipDriverAction}
-            onMarkInstalled={onMarkDriverInstalled}
-            onProbeAudio={onProbeAudio}
+            onInstall={onInstallDriver}
+            nativeRuntime={nativeRuntime}
+            onQueryService={onQueryService}
+            onReadServiceLog={onReadServiceLog}
+            onServiceAction={onServiceAction}
             onContinue={onCompleteStep}
             onSkip={onSkipStep}
-            onOpenSettings={() => onOpenSystemSettings('sound')}
-            onOpenVendorPage={() => onOpenExternalPage('vbcable')}
           />)}
         {step === 'deviceConnection' && <div className="setup-screen">
           <span className="setup-hero-icon"><Bluetooth size={24} /></span>
@@ -141,10 +144,7 @@ export function SetupDialog({ platform, macPermissions, state, onClose, onOpenSt
               <span><Keyboard size={15} /> 输入监控：{macPermissions.inputMonitoring ? '已授权' : '稍后授权'}</span>
               <span><Command size={15} /> 辅助功能：{macPermissions.accessibility ? '已授权' : '稍后授权'}</span>
               <span><AudioLines size={15} /> MiRemoteV 2ch：{driverStatusLabel(state.drivers.audio.status)}</span>
-            </> : <>
-              <span><Keyboard size={15} /> 按键驱动：{driverStatusLabel(state.drivers.input.status)}</span>
-              <span><AudioLines size={15} /> CABLE 麦克风：{driverStatusLabel(state.drivers.audio.status)}</span>
-            </>}
+            </> : null}
             <span><Bluetooth size={15} /> RC003：{state.device.status === 'connected' ? '已连接' : '稍后连接'}</span>
           </div>
           <div className="setup-actions"><button type="button" className="button primary setup-primary" onClick={onFinish}>进入按键映射</button></div>
@@ -288,16 +288,10 @@ export function MacPermissionHelperWindow({ activePermission, permissions, onOpe
   </main>
 }
 
-type DriversSetupScreenProps = {
-  state: SetupState
-  onAction: (driver: DriverKind, action: DriverActionKind) => void
-  onSkipAction: (driver: DriverKind, action: DriverActionKind) => void
-  onMarkInstalled: (driver: DriverKind) => void
-  onProbeAudio: () => void
+type DriversSetupScreenProps = Pick<SetupDialogProps, 'nativeRuntime' | 'onQueryService' | 'onServiceAction' | 'onReadServiceLog'> & {
+  onInstall: () => Promise<void>
   onContinue: () => void
   onSkip: () => void
-  onOpenSettings: () => void
-  onOpenVendorPage: () => void
 }
 
 function driverStatusLabel(status: SetupState['drivers']['input']['status']) {
@@ -310,58 +304,45 @@ function isDriverInstalled(state: SetupState, kind: DriverKind) {
   return status === 'installed' || status === 'restartRequired'
 }
 
-type DriverSetupItemProps = Pick<DriversSetupScreenProps, 'state' | 'onAction' | 'onMarkInstalled' | 'onProbeAudio' | 'onOpenSettings' | 'onOpenVendorPage'> & {
-  kind: DriverKind
-  disabled: boolean
-}
+function DriversSetupScreen({ onInstall, onContinue, onSkip, nativeRuntime, onQueryService, onReadServiceLog, onServiceAction }: DriversSetupScreenProps) {
+  const [serviceBusy, setServiceBusy] = useState(false)
+  const launchingRef = useRef(false)
+  const [launching, setLaunching] = useState(false)
+  const [opened, setOpened] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-function DriverSetupItem({ kind, state, onAction, onMarkInstalled, onProbeAudio, onOpenSettings, onOpenVendorPage, disabled }: DriverSetupItemProps) {
-  const definition = driverDefinitions[kind]
-  const driver = state.drivers[kind]
-  const running = driver.action.status === 'running'
-  const installed = isDriverInstalled(state, kind)
-  const message = driver.action.error ?? driver.message ?? (kind === 'input'
-    ? '经过校验的 Interception 驱动，仅用于识别 RC003 按键。'
-    : 'VB-Audio Donationware，安装后提供 CABLE Output 虚拟录音设备。')
-  return <section className={`driver-setup-item ${driver.status}`}>
-    <div className="driver-setup-heading">
-      <span className="driver-setup-icon">{kind === 'input' ? <Keyboard size={18} /> : <AudioLines size={18} />}</span>
-      <div><h3>{definition.title}</h3><p>{definition.description}</p></div>
-      <span className="driver-status-chip"><span className="setup-status-dot" /> {driverStatusLabel(driver.status)}</span>
-    </div>
-    <p className="driver-setup-message">{message}</p>
-    {kind === 'audio' && <p className="driver-setup-message">微信输入法语音输入可能压低其他媒体音量，甚至中断播放。麦克风请选择 CABLE Output；系统和应用的扬声器输出请保留真实扬声器或耳机，不要选择 CABLE Input 等虚拟设备。Axonkey 会自行向 CABLE Input 写入遥控器语音。</p>}
-    <div className="driver-setup-actions">
-      {!installed && <button type="button" className="dialog-secondary" disabled={disabled} onClick={() => onAction(kind, 'install')}><Download size={14} /> {running ? '等待安装器…' : kind === 'audio' ? '安装 VB-CABLE' : '安装驱动'}</button>}
-      {installed && <button type="button" className="dialog-secondary danger" disabled={disabled} onClick={() => onAction(kind, 'uninstall')}><Trash2 size={14} /> {running ? '等待安装器…' : kind === 'audio' ? '卸载 VB-CABLE' : '卸载驱动'}</button>}
-      {kind === 'input' && !installed && <button type="button" className="dialog-secondary" disabled={disabled} onClick={() => onMarkInstalled(kind)}><Check size={14} /> 我已手动安装</button>}
-      {kind === 'audio' && <button type="button" className="dialog-secondary" disabled={disabled || driver.status === 'checking'} onClick={onProbeAudio}><RotateCcw size={14} /> {driver.status === 'checking' ? '检测中' : '重新检测'}</button>}
-      {kind === 'audio' && <button type="button" className="dialog-secondary" disabled={disabled} onClick={onOpenSettings}><Settings2 size={14} /> 声音设置</button>}
-      {kind === 'audio' && <button type="button" className="dialog-secondary" disabled={disabled} onClick={onOpenVendorPage}><ExternalLink size={14} /> VB-Audio 官网</button>}
-    </div>
-  </section>
-}
-
-function DriversSetupScreen({ state, onAction, onSkipAction, onMarkInstalled, onProbeAudio, onContinue, onSkip, onOpenSettings, onOpenVendorPage }: DriversSetupScreenProps) {
-  const anyRunning = (['input', 'audio'] as const).some((kind) => state.drivers[kind].action.status === 'running')
-  const allInstalled = (['input', 'audio'] as const).every((kind) => isDriverInstalled(state, kind))
-  const restartRequired = (['input', 'audio'] as const).some((kind) => state.drivers[kind].restartRequired)
-  const skipDrivers = () => {
-    for (const kind of ['input', 'audio'] as const) {
-      if (!isDriverInstalled(state, kind)) onSkipAction(kind, 'install')
+  const install = async () => {
+    if (launchingRef.current || serviceBusy) return
+    launchingRef.current = true
+    setLaunching(true)
+    setOpened(false)
+    setError(null)
+    try {
+      await onInstall()
+      setOpened(true)
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error))
+    } finally {
+      launchingRef.current = false
+      setLaunching(false)
     }
-    onSkip()
   }
+
   return <div className="setup-screen drivers-setup-screen">
-    <span className="setup-hero-icon"><Download size={24} /></span>
-    <span className="section-kicker">DRIVERS</span>
-    <h2 id="setup-title">一次完成两个驱动</h2>
-    <p className="setup-lead">依次完成按键驱动和 CABLE 虚拟麦克风安装。两个安装器都结束后再重启 Windows，避免重复重启。</p>
-    <div className="driver-setup-list">
-      <DriverSetupItem kind="input" state={state} onAction={onAction} onMarkInstalled={onMarkInstalled} onProbeAudio={onProbeAudio} onOpenSettings={onOpenSettings} onOpenVendorPage={onOpenVendorPage} disabled={anyRunning} />
-      <DriverSetupItem kind="audio" state={state} onAction={onAction} onMarkInstalled={onMarkInstalled} onProbeAudio={onProbeAudio} onOpenSettings={onOpenSettings} onOpenVendorPage={onOpenVendorPage} disabled={anyRunning} />
+    <h2 id="setup-title">驱动与服务</h2>
+    <div className="driver-installer-content">
+      <div className="driver-installer-heading"><h3>设备驱动</h3><span>Quarbor</span></div>
+      <button type="button" className="button primary setup-primary driver-install-button" disabled={launching || serviceBusy} aria-busy={launching} onClick={() => void install()}>
+        <ShieldCheck size={20} /> {launching ? '正在打开…' : '安装驱动'}
+      </button>
+      {error && <p className="driver-installer-feedback error" role="alert">{error}</p>}
+      {!error && <p className="driver-installer-feedback" role="status">{launching ? '请在 Windows 授权窗口中允许打开安装器。' : opened ? '安装器已打开，请在安装器中完成安装后继续。' : ''}</p>}
     </div>
-    <div className="driver-restart-notice"><RotateCcw size={16} /><div><strong>两个驱动安装完成后统一重启一次</strong><span>重启前可以先完成剩余引导；驱动将在下一次进入 Windows 后生效。</span></div></div>
-    <div className="setup-actions"><button type="button" className="setup-text-button" disabled={anyRunning} onClick={skipDrivers}>稍后安装</button><button type="button" className="button primary setup-primary" disabled={anyRunning} onClick={onContinue}>{allInstalled ? restartRequired ? '继续，稍后重启' : '继续' : '稍后处理并继续'} <ChevronRight size={15} /></button></div>
+    <WindowsServiceControl nativeRuntime={nativeRuntime} disabled={launching} onBusyChange={setServiceBusy} onQuery={onQueryService} onAction={onServiceAction} />
+    <WindowsServiceLog nativeRuntime={nativeRuntime} onRead={onReadServiceLog} />
+    <div className="setup-actions">
+      <button type="button" className="setup-text-button" disabled={launching || serviceBusy} onClick={onSkip}>稍后安装</button>
+      <button type="button" className="dialog-secondary setup-primary" disabled={launching || serviceBusy} onClick={onContinue}>继续 <ChevronRight size={15} /></button>
+    </div>
   </div>
 }

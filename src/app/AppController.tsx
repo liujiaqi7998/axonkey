@@ -1,3 +1,4 @@
+import type { WindowsServiceAction, WindowsServiceStatus, WindowsServiceLog } from '../windowsService'
 import { useReleaseUpdate } from '../hooks/useReleaseUpdate'
 // @refresh reset
 // Authorization callbacks can outlive a dev edit; remount instead of reusing
@@ -82,7 +83,6 @@ import {
   setCurrentSetupStep,
   setDeviceConnection,
   setDriverStatus,
-  skipDriverAction,
   skipSetup,
   skipSetupStep,
 } from '../setupModel'
@@ -828,15 +828,25 @@ function AppController() {
     window.setTimeout(() => setToast(''), 2400)
   }
 
-  const openExternalPage = async (page: 'vbcable') => {
-    try {
-      await invoke('open_external_page', { page })
-    } catch (error) {
-      logError('Failed to open the VB-Audio page', error)
-      setToast('无法打开 VB-Audio 官方页面')
-      window.setTimeout(() => setToast(''), 2200)
-    }
+  const openDriverInstaller = async () => {
+    if (!nativeRuntime) throw new Error('请在 Windows 桌面版中安装驱动。')
+    await invoke('launch_driver_installer')
   }
+
+  const queryWindowsService = useCallback(async () => {
+    if (!nativeRuntime) throw new Error('请在 Windows 桌面版中查看服务状态。')
+    return invoke<WindowsServiceStatus>('get_windows_service_status')
+  }, [nativeRuntime])
+
+  const readWindowsServiceLog = useCallback(async () => {
+    if (!nativeRuntime) throw new Error('请在 Windows 桌面版中查看服务运行日志。')
+    return invoke<WindowsServiceLog>('get_windows_service_log')
+  }, [nativeRuntime])
+
+  const manageWindowsService = useCallback(async (action: WindowsServiceAction) => {
+    if (!nativeRuntime) throw new Error('请在 Windows 桌面版中管理服务。')
+    return invoke<WindowsServiceStatus>('manage_windows_service', { action })
+  }, [nativeRuntime])
 
   const openLogDirectory = async () => {
     try {
@@ -1454,12 +1464,14 @@ function AppController() {
         onSkipAll={() => { setSetupState((current) => skipSetup(current)); setSetupOpen(false) }}
         onReset={() => setSetupState(resetSetup())}
         onDriverAction={(driver, action) => void runDriverAction(driver, action)}
-        onSkipDriverAction={(driver, action) => updateSetup((current) => skipDriverAction(current, driver, action))}
-        onMarkDriverInstalled={(driver) => updateSetup((current) => setDriverStatus(current, driver, 'restartRequired', { restartRequired: true, message: '已确认安装，重启 Windows 后驱动生效。' }))}
+        onInstallDriver={openDriverInstaller}
+        nativeRuntime={nativeRuntime}
+        onQueryService={queryWindowsService}
+        onReadServiceLog={readWindowsServiceLog}
+        onServiceAction={manageWindowsService}
         onProbeAudio={() => void probeAudioState()}
         onOpenSystemSettings={(page) => void openSystemSettings(page)}
         onRequestMacPermission={(kind) => void requestMacPermission(kind)}
-        onOpenExternalPage={(page) => void openExternalPage(page)}
         onCheckDevice={checkDeviceConnection}
         onMarkDeviceConnected={() => updateSetup((current) => setDeviceConnection(current, { status: 'connected', name: '小米遥控器 RC003', message: '设备已由用户确认连接。' }))}
         onFinish={() => {

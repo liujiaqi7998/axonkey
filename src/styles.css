@@ -375,28 +375,31 @@ h1 { color: #202327; font-size: 28px; letter-spacing: 0; line-height: 1; }
 .setup-status-panel.installed .setup-status-dot, .setup-status-panel.connected .setup-status-dot { background: #3da052; box-shadow: 0 0 0 3px #d8efdd; }
 .setup-status-panel.restartRequired .setup-status-dot { background: #e28c24; box-shadow: 0 0 0 3px #f7e6d1; }
 .setup-status-panel.error .setup-status-dot, .setup-status-panel.disconnected .setup-status-dot { background: #d45555; box-shadow: 0 0 0 3px #f4dddd; }
-.drivers-setup-screen .setup-hero-icon { width: 40px; height: 40px; margin-bottom: 10px; }
-.drivers-setup-screen h2 { margin-top: 4px; font-size: 24px; }
-.drivers-setup-screen .setup-lead { margin-top: 6px; line-height: 1.55; }
-.driver-setup-list { display: flex; width: 100%; flex-direction: column; gap: 8px; margin-top: 13px; }
-.driver-setup-item { width: 100%; padding: 11px 12px; border: 1px solid #d7dce0; border-radius: 8px; background: #f1f3f4; }
-.driver-setup-heading { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
-.driver-setup-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 7px; color: #4d7398; background: #dde8f2; }
-.driver-setup-heading h3 { color: #343b41; font-size: 14px; }
-.driver-setup-heading p { margin-top: 2px; overflow: hidden; color: #7b838a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.driver-status-chip { display: inline-flex; min-width: 78px; min-height: 27px; align-items: center; justify-content: center; gap: 7px; padding: 0 8px; border: 1px solid #d5d9dc; border-radius: 7px; color: #657079; background: #f8f9fa; font-size: 12px; white-space: nowrap; }
-.driver-status-chip .setup-status-dot { margin-top: 0; }
-.driver-setup-item.installed .setup-status-dot { background: #3da052; box-shadow: 0 0 0 3px #d8efdd; }
-.driver-setup-item.restartRequired .setup-status-dot { background: #e28c24; box-shadow: 0 0 0 3px #f7e6d1; }
-.driver-setup-item.error .setup-status-dot { background: #d45555; box-shadow: 0 0 0 3px #f4dddd; }
-.driver-setup-message { max-width: calc(100% - 44px); margin: 8px 0 0 44px; overflow: visible; color: #69737c; font-size: 12px; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }
-.driver-setup-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 9px 0 0 44px; }
-.driver-setup-actions .dialog-secondary { height: 30px; padding: 0 10px; font-size: 12px; }
-.driver-restart-notice { display: flex; gap: 10px; width: 100%; margin-top: 9px; padding: 9px 12px; border-left: 3px solid #83a9ce; color: #66717b; background: #eef2f5; }
-.driver-restart-notice svg { flex: 0 0 auto; margin-top: 1px; }
-.driver-restart-notice > div { display: flex; flex-direction: column; gap: 2px; }
-.driver-restart-notice strong { color: #44505a; font-size: 13px; }
-.driver-restart-notice span { font-size: 12px; line-height: 1.4; }
+.windows-setup-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.driver-installer-content { display: flex; width: 100%; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 24px; padding: 20px; border-radius: 9px; background: #eef1f4; }
+.driver-installer-heading { display: flex; flex-direction: column; gap: 5px; }
+.driver-installer-heading h3, .setup-service-title h3 { color: #343b41; font-size: 15px; }
+.driver-installer-heading > span { color: #7b838a; font-size: 12px; }
+.button.driver-install-button { min-height: 38px; min-width: 128px; gap: 8px; font-size: 14px; }
+.driver-installer-feedback { width: 100%; color: #697179; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.driver-installer-feedback:empty, .setup-service-feedback:empty { display: none; }
+.driver-installer-feedback.error, .setup-service-feedback.error { color: #b34b4b; }
+.setup-service-panel { width: 100%; margin-top: 16px; padding: 20px; border-radius: 9px; background: #eef1f4; }
+.setup-service-heading, .setup-service-title { display: flex; align-items: center; gap: 8px; }
+.setup-service-heading { justify-content: space-between; }
+.setup-service-refresh { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid #d5dbe1; border-radius: 50%; color: #687783; background: #f8f9fa; }
+.setup-service-status { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px; color: #7b838a; font-size: 12px; }
+.setup-service-badge { display: inline-flex; align-items: center; gap: 7px; color: #677480; }
+.setup-service-badge i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.setup-service-badge.running { color: #308049; }
+.setup-service-badge.startPending, .setup-service-badge.stopPending, .setup-service-badge.deletePending { color: #aa741b; }
+.setup-service-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.setup-service-actions .dialog-secondary { min-width: 78px; gap: 6px; }
+.setup-service-actions button:disabled, .setup-service-refresh:disabled { cursor: default; opacity: .45; }
+.setup-service-feedback { margin-top: 12px; color: #697179; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.drivers-setup-screen { min-height: 490px; }
+.setup-dialog:has(.drivers-setup-screen) { grid-template-rows: minmax(0, 1fr); max-height: calc(100dvh - 48px); min-height: 0; }
+.setup-content:has(.drivers-setup-screen) { min-height: 0; overflow-y: auto; }
 .setup-inline-actions { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; margin-top: 18px; }
 .dialog-secondary.danger { color: #b34b4b; }
 .dialog-secondary.danger:hover { border-color: #d9a7a7; color: #a52e2e; background: #fff7f7; }
@@ -1478,3 +1481,12 @@ html.macos-vibrancy,
   border-color: #94b8df;
   background: rgb(240 247 255 / 82%);
 }
+
+.setup-service-log { width: 100%; min-width: 0; margin-top: 22px; }
+.setup-service-log h3 { color: #343b41; font-size: 15px; }
+.setup-service-log .dialog-secondary { gap: 6px; }
+.setup-service-log button:disabled { cursor: default; opacity: .45; }
+.service-log-path { margin-top: 8px; color: #818991; font-size: 11px; overflow-wrap: anywhere; }
+.service-log-output { max-height: 230px; min-height: 120px; margin: 10px 0 0; padding: 12px; overflow: auto; overscroll-behavior: contain; border: 1px solid #dce1e6; border-radius: 7px; background: #eef1f4; color: #404d59; font: 12px/1.65 Consolas, 'Cascadia Mono', monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.service-log-empty { display: grid; min-height: 96px; place-items: center; margin-top: 10px; padding: 16px; border-radius: 7px; background: #eef1f4; color: #79828b; font-size: 13px; }
+.service-log-meta { margin-top: 6px; color: #818991; font-size: 11px; }

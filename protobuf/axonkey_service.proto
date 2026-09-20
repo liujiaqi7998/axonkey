@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package axonkey.service.v1;
+
+// The service is exposed through the local Windows named pipe
+// \\.\pipe\AxonkeyService.v1. Each frame is a little-endian uint32 length
+// followed by one of the protobuf messages below.
+service AxonkeyService {
+  rpc GetServiceInfo(ServiceInfoRequest) returns (ServiceInfo);
+  rpc SetAudioGain(SetAudioGainRequest) returns (OperationResult);
+  rpc GetDevices(DeviceListRequest) returns (DeviceList);
+  rpc GetVoiceStatus(VoiceStatusRequest) returns (VoiceStatus);
+  rpc GetAudioLevel(AudioLevelRequest) returns (AudioLevel);
+  rpc Subscribe(SubscribeRequest) returns (OperationResult);
+}
+
+message ServiceInfoRequest {}
+message DeviceListRequest {}
+message VoiceStatusRequest {}
+message AudioLevelRequest {}
+
+message ServiceInfo {
+  string name = 1;
+  string version = 2;
+  string protocol_version = 3;
+  string pipe_name = 4;
+}
+
+message SetAudioGainRequest { int32 gain_db = 1; }
+message OperationResult { bool success = 1; string error = 2; }
+
+message DeviceList { repeated Device devices = 1; }
+message Device {
+  string instance_id = 1;
+  string endpoint_path = 2;
+  bool driver_mounted = 3;
+  bool input_blocked = 4;
+  bool data_forward_enabled = 5;
+  bool connected = 6;
+}
+
+message VoiceStatus {
+  string state = 1;
+  string device_instance_id = 2;
+  bool connected = 3;
+  bool active = 4;
+  bool microphone_open = 5;
+  uint32 protocol_version = 6;
+  uint32 session_id = 7;
+}
+
+message AudioLevel {
+  float peak = 1;
+  float rms = 2;
+  uint64 timestamp_ms = 3;
+}
+
+message KeyboardEvent {
+  string device_instance_id = 1;
+  bytes report = 2;
+  uint64 timestamp_ms = 3;
+}
+
+message SubscribeRequest {
+  bool keyboard = 1;
+  bool audio_level = 2;
+  bool voice_status = 3;
+}
+
+// Events use a stable type name and a payload message so the server can add
+// event kinds without changing the pipe framing. The payload is one of the
+// KeyboardEvent, AudioLevel, or VoiceStatus messages above.
+message Event {
+  string type = 1;
+  bytes payload = 2;
+}

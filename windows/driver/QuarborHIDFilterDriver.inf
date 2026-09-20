@@ -1,0 +1,49 @@
+; Service-only primitive package. No default attachment. The management API
+; registers LowerFilters on explicitly selected HID Keyboard device instances.
+[Version]
+Signature = "$WINDOWS NT$"
+Class = Keyboard
+ClassGuid = {4D36E96B-E325-11CE-BFC1-08002BE10318}
+Provider = %ManufacturerName%
+CatalogFile = QuarborHIDFilterDriver.cat
+DriverVer = 09/19/2026,0.3.5.0
+PnpLockdown = 1
+; Copyright: Quarbor Logic Technologies Inc.
+
+[DestinationDirs]
+DriverCopy = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,
+
+[SourceDisksFiles]
+QuarborHIDFilterDriver.sys = 1
+
+[DefaultInstall.NTamd64]
+CopyFiles = DriverCopy
+
+[DriverCopy]
+QuarborHIDFilterDriver.sys
+
+[DefaultInstall.NTamd64.Services]
+AddService = QuarborHIDFilterDriver,0,DriverService
+
+[DriverService]
+DisplayName = %ServiceDescription%
+ServiceType = 1
+StartType = 3
+ErrorControl = 1
+ServiceBinary = %13%\QuarborHIDFilterDriver.sys
+
+[DefaultInstall.NTamd64.Wdf]
+KmdfService = QuarborHIDFilterDriver,WdfSettings
+
+[WdfSettings]
+KmdfLibraryVersion = 1.33
+
+[Strings]
+ManufacturerName = "Quarbor"
+MsCopyRight = "Quarbor Logic Technologies Inc."
+DiskName = "Quarbor HID Keyboard Filter Installation Disk"
+ServiceDescription = "Quarbor HID Keyboard Filter Driver"
+

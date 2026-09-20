@@ -1,0 +1,173 @@
+[Version]
+Signature   = "$Windows NT$"
+Class       = Media
+Provider    = %Quarbor%
+ClassGUID   = {4d36e96c-e325-11ce-bfc1-08002be10318}
+DriverVer = 09/19/2026,1.0.2.0
+CatalogFile = QuarborVirtualMicrophoneDriver.cat
+PnpLockdown = 1
+; Copyright: Quarbor Logic Technologies Inc.
+
+[SourceDisksNames]
+222="QUARBORVIRTUALMICROPHONE Driver Disk","",222
+
+[SourceDisksFiles]
+QuarborVirtualMicrophoneDriver.sys=222
+
+[SignatureAttributes]
+QuarborVirtualMicrophoneDriver.sys=SignatureAttributes.DRM
+
+[SignatureAttributes.DRM]
+DRMLevel=1300
+
+[SignatureAttributes.PETrust]
+PETrust=true
+
+[Manufacturer]
+%MfgName%=Quarbor,NTamd64
+
+[Quarbor.NTamd64]
+%QUARBORVIRTUALMICROPHONE_SA.DeviceDesc%=QUARBORVIRTUALMICROPHONE_SA, Root\QuarborVirtualMicrophone
+
+[DestinationDirs]
+QUARBORVIRTUALMICROPHONE_SA.CopyList=12 ; system32 directory
+
+;======================================================
+; QUARBORVIRTUALMICROPHONE_SA
+;======================================================
+[QUARBORVIRTUALMICROPHONE_SA.CopyList]
+QuarborVirtualMicrophoneDriver.sys
+
+[QUARBORVIRTUALMICROPHONE_SA.AddReg]
+HKR,,AssociatedFilters,,"wdmaud,swmidi,redbook"
+HKR,,Driver,,QuarborVirtualMicrophoneDriver.sys
+
+;
+; For demo only, please review these power management settings for your architecture. 
+;
+HKR,PowerSettings,SingleComponentMultiFxStates,3,1,0,0,0  ; Turn on multi Fx support.
+HKR,PowerSettings,ConservationIdleTime,3,3,0,0,0          ; 3 seconds for idle power management when on battery
+HKR,PowerSettings,PerformanceIdleTime,3,3,0,0,0           ; 3 seconds for idle power management when on AC power
+HKR,PowerSettings,IdlePowerState,3,3,0,0,0                ; go to D3 for idle power management
+
+HKR,Drivers,SubClasses,,"wave,midi,mixer"
+
+HKR,Drivers\wave\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\midi\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\mixer\wdmaud.drv,Driver,,wdmaud.drv
+
+HKR,Drivers\wave\wdmaud.drv,Description,,%QUARBORVIRTUALMICROPHONE_SA.DeviceDesc%
+HKR,Drivers\mixer\wdmaud.drv,Description,,%QUARBORVIRTUALMICROPHONE_SA.DeviceDesc%
+
+;======================================================
+; Capture interfaces: ordinary mono microphone.
+;======================================================
+[QUARBORVIRTUALMICROPHONE.I.WaveMicArray1]
+AddReg=QUARBORVIRTUALMICROPHONE.I.WaveMicArray1.AddReg
+[QUARBORVIRTUALMICROPHONE.I.WaveMicArray1.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%QUARBORVIRTUALMICROPHONE.WaveMicArray1.szPname%
+
+[QUARBORVIRTUALMICROPHONE.I.TopologyMicArray1]
+AddReg=QUARBORVIRTUALMICROPHONE.I.TopologyMicArray1.AddReg
+
+[QUARBORVIRTUALMICROPHONE.I.TopologyMicArray1.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%QUARBORVIRTUALMICROPHONE.TopologyMicArray1.szPname%
+
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+
+; The following lines opt-in to pull mode.
+HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x1
+
+;======================================================
+; QUARBORVIRTUALMICROPHONE_SA
+;======================================================
+[QUARBORVIRTUALMICROPHONE_SA.NT]
+Include=ks.inf,wdmaudio.inf
+Needs=KS.Registration, WDMAUDIO.Registration
+CopyFiles=QUARBORVIRTUALMICROPHONE_SA.CopyList
+AddReg=QUARBORVIRTUALMICROPHONE_SA.AddReg
+
+[QUARBORVIRTUALMICROPHONE_SA.NT.Interfaces]
+;
+; Interfaces for the ordinary microphone capture endpoint.
+; Keep the reference strings stable when updating an existing device.
+;
+AddInterface=%KSCATEGORY_AUDIO%,    %KSNAME_WaveMicArray1%, QUARBORVIRTUALMICROPHONE.I.WaveMicArray1
+AddInterface=%KSCATEGORY_REALTIME%, %KSNAME_WaveMicArray1%, QUARBORVIRTUALMICROPHONE.I.WaveMicArray1
+AddInterface=%KSCATEGORY_CAPTURE%,  %KSNAME_WaveMicArray1%, QUARBORVIRTUALMICROPHONE.I.WaveMicArray1
+AddInterface=%KSCATEGORY_AUDIO%,    %KSNAME_TopologyMicArray1%, QUARBORVIRTUALMICROPHONE.I.TopologyMicArray1
+AddInterface=%KSCATEGORY_TOPOLOGY%, %KSNAME_TopologyMicArray1%, QUARBORVIRTUALMICROPHONE.I.TopologyMicArray1
+
+[QUARBORVIRTUALMICROPHONE_SA.NT.Services]
+AddService=QuarborVirtualMicrophoneDriver,0x00000002,QuarborVirtualMicrophoneDriver_Service_Inst
+
+[QuarborVirtualMicrophoneDriver_Service_Inst]
+DisplayName=%QuarborVirtualMicrophoneDriver.SvcDesc%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\QuarborVirtualMicrophoneDriver.sys
+
+[QUARBORVIRTUALMICROPHONE_SA.NT.HW]
+AddReg = AUDIOHW.AddReg
+
+[AUDIOHW.AddReg]
+; FILE_DEVICE_SOUND
+HKR,,DeviceType,0x10001,0x0000001D
+; SDDL_DEVOBJ_SYS_ALL_ADM_RWX_WORLD_RWX_RES_RWX
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GRGWGX;;;BA)(A;;GRGWGX;;;WD)(A;;GRGWGX;;;RC)"
+
+
+;======================================================
+; WDF
+;======================================================
+[QUARBORVIRTUALMICROPHONE_SA.NT.Wdf]
+KmdfService = QuarborVirtualMicrophoneDriver, QUARBORVIRTUALMICROPHONE_SA_WdfSect
+[QUARBORVIRTUALMICROPHONE_SA_WdfSect]
+KmdfLibraryVersion = 1.33
+
+;======================================================
+; COMMON
+;======================================================
+[Strings]
+
+;Non-localizable
+
+
+KSNAME_WaveMicArray1="WaveMicArray1"
+KSNAME_TopologyMicArray1="TopologyMicArray1"
+
+Proxy.CLSID="{17CCA71B-ECD7-11D0-B908-00A0C9223196}"
+KSCATEGORY_AUDIO="{6994AD04-93EF-11D0-A3CC-00A0C9223196}"
+KSCATEGORY_RENDER="{65E8773E-8F56-11D0-A3B9-00A0C9223196}"
+KSCATEGORY_CAPTURE="{65E8773D-8F56-11D0-A3B9-00A0C9223196}"
+KSCATEGORY_REALTIME ="{EB115FFC-10C8-4964-831D-6DCB02E6F23F}"
+KSCATEGORY_TOPOLOGY = "{DDA54A40-1E4C-11D1-A050-405705C10000}"
+
+KSNODETYPE_ANY   = "{00000000-0000-0000-0000-000000000000}"
+
+PKEY_AudioEndpoint_Association               = "{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},2"
+PKEY_AudioEndpoint_Supports_EventDriven_Mode = "{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},7"
+
+;Localizable
+
+Quarbor = "Quarbor"
+MfgName = "Quarbor"
+MsCopyRight = "Quarbor Logic Technologies Inc."
+
+QUARBORVIRTUALMICROPHONE_SA.DeviceDesc="Quarbor Virtual Microphone"
+QuarborVirtualMicrophoneDriver.SvcDesc="Quarbor Virtual Microphone Driver"
+
+;; friendly names
+
+QUARBORVIRTUALMICROPHONE.WaveMicArray1.szPname="Quarbor Virtual Microphone"
+QUARBORVIRTUALMICROPHONE.TopologyMicArray1.szPname="Quarbor Virtual Microphone"
+
+
+
+
+
+
+

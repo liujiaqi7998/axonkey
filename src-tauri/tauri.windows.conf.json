@@ -8,6 +8,15 @@
       "icons/icon.ico"
     ],
     "resources": {
+      "../.build/service-bundle/AxonkeyService.exe": "windows/service/AxonkeyService.exe",
+      "../scripts/manage-windows-service.ps1": "scripts/manage-windows-service.ps1",
+      "../windows/driver/QuarborAxonkeyDriverInstaller.exe": "windows/driver/QuarborAxonkeyDriverInstaller.exe",
+      "../windows/driver/QuarborHIDFilterDriver.inf": "windows/driver/QuarborHIDFilterDriver.inf",
+      "../windows/driver/QuarborHIDFilterDriver.sys": "windows/driver/QuarborHIDFilterDriver.sys",
+      "../windows/driver/QuarborHIDFilterDriver.cat": "windows/driver/QuarborHIDFilterDriver.cat",
+      "../windows/driver/QuarborVirtualMicrophoneDriver.inf": "windows/driver/QuarborVirtualMicrophoneDriver.inf",
+      "../windows/driver/QuarborVirtualMicrophoneDriver.sys": "windows/driver/QuarborVirtualMicrophoneDriver.sys",
+      "../windows/driver/QuarborVirtualMicrophoneDriver.cat": "windows/driver/QuarborVirtualMicrophoneDriver.cat",
       "../scripts/install-driver.ps1": "scripts/install-driver.ps1",
       "../scripts/uninstall-driver.ps1": "scripts/uninstall-driver.ps1",
       "../scripts/vbcable-driver.ps1": "scripts/vbcable-driver.ps1",

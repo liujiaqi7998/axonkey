@@ -1,5 +1,12 @@
 mod audio_service;
 mod input_service;
+mod driver_installer;
+mod windows_service;
+#[cfg(windows)]
+mod windows_service_rpc;
+mod service_logs;
+#[cfg(windows)]
+mod windows_elevation;
 
 use audio_service::{AudioService, AudioServiceStatus};
 use input_service::{InputService, NativeSettings};
@@ -1186,6 +1193,16 @@ pub fn run() {
             get_log_info,
             open_log_directory,
             launch_driver_action,
+            driver_installer::launch_driver_installer,
+            windows_service::get_windows_service_status,
+            service_logs::get_windows_service_log,
+            windows_service::manage_windows_service,
+            windows_service::get_windows_service_info,
+            windows_service::set_windows_audio_gain,
+            windows_service::get_windows_service_devices,
+            windows_service::get_windows_voice_status,
+            windows_service::get_windows_audio_level,
+            windows_service::subscribe_windows_service_events,
             open_windows_settings,
             open_system_settings,
             set_permission_helper_mode,

@@ -82,6 +82,12 @@ ATVV session control, AVAudioEngine device binding, reconnect timeouts and
 sleep-safe audio-engine lifetime. The macOS service starts with the app, but opens
 Core Audio IO only while RC003 is sending voice data.
 
+On Windows, `AxonkeyService.exe` exposes a local protobuf API on
+`\\.\pipe\AxonkeyService.v1` before its device worker starts. The desktop side
+uses this API for service metadata, gain control, mounted/intercepted device
+snapshots, keyboard reports, audio levels, and voice state. Streaming events use
+the same framed pipe after a `Subscribe` request.
+
 The first-run guide presents Interception and VB-CABLE on one driver setup page
 so both installers can finish before the user reboots Windows once. It can
 launch the reviewed Interception installer and the official VB-Audio installer.
