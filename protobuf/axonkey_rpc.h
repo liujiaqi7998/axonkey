@@ -29,6 +29,7 @@ struct AudioLevel { float peak = 0, rms = 0; std::uint64_t timestampMs = 0; };
 struct KeyboardEvent { std::string deviceInstanceId; Bytes report; std::uint64_t timestampMs = 0; };
 struct Subscribe { bool keyboard = false, audioLevel = false, voiceStatus = false; };
 
+// Wire codec backed by nanopb (see generated/axonkey_service.pb.*).
 bool Parse(const Bytes& bytes, Request& value);
 bool Parse(const Bytes& bytes, SetAudioGain& value);
 bool Parse(const Bytes& bytes, Subscribe& value);
@@ -36,6 +37,10 @@ bool Parse(const Bytes& bytes, DeviceList& value);
 bool Parse(const Bytes& bytes, VoiceStatus& value);
 bool Parse(const Bytes& bytes, AudioLevel& value);
 bool Parse(const Bytes& bytes, KeyboardEvent& value);
+bool Parse(const Bytes& bytes, Response& value);
+bool Parse(const Bytes& bytes, EventEnvelope& value);
+bool Parse(const Bytes& bytes, ServiceInfo& value);
+bool Parse(const Bytes& bytes, OperationResult& value);
 
 Bytes Serialize(const Request& value);
 Bytes Serialize(const Response& value);
@@ -46,5 +51,7 @@ Bytes Serialize(const DeviceList& value);
 Bytes Serialize(const VoiceStatus& value);
 Bytes Serialize(const AudioLevel& value);
 Bytes Serialize(const KeyboardEvent& value);
+Bytes Serialize(const SetAudioGain& value);
+Bytes Serialize(const Subscribe& value);
 
 } // namespace axonkey::rpc
