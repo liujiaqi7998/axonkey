@@ -1,0 +1,50 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace axonkey::rpc {
+
+using Bytes = std::vector<std::uint8_t>;
+
+struct Request { std::uint64_t requestId = 0; std::string method; Bytes payload; };
+struct Response { std::uint64_t requestId = 0; bool success = false; std::string error; Bytes payload; };
+struct EventEnvelope { std::string type; Bytes payload; };
+
+struct ServiceInfo { std::string name, version, protocolVersion, pipeName; };
+struct SetAudioGain { std::int32_t gainDb = 0; };
+struct OperationResult { bool success = false; std::string error; };
+struct Device {
+    std::string instanceId, endpointPath;
+    bool driverMounted = false, inputBlocked = false, dataForwardEnabled = false, connected = false;
+};
+struct DeviceList { std::vector<Device> devices; };
+struct VoiceStatus {
+    std::string state, deviceInstanceId;
+    bool connected = false, active = false, microphoneOpen = false;
+    std::uint32_t protocolVersion = 0, sessionId = 0;
+};
+struct AudioLevel { float peak = 0, rms = 0; std::uint64_t timestampMs = 0; };
+struct KeyboardEvent { std::string deviceInstanceId; Bytes report; std::uint64_t timestampMs = 0; };
+struct Subscribe { bool keyboard = false, audioLevel = false, voiceStatus = false; };
+
+bool Parse(const Bytes& bytes, Request& value);
+bool Parse(const Bytes& bytes, SetAudioGain& value);
+bool Parse(const Bytes& bytes, Subscribe& value);
+bool Parse(const Bytes& bytes, DeviceList& value);
+bool Parse(const Bytes& bytes, VoiceStatus& value);
+bool Parse(const Bytes& bytes, AudioLevel& value);
+bool Parse(const Bytes& bytes, KeyboardEvent& value);
+
+Bytes Serialize(const Request& value);
+Bytes Serialize(const Response& value);
+Bytes Serialize(const EventEnvelope& value);
+Bytes Serialize(const ServiceInfo& value);
+Bytes Serialize(const OperationResult& value);
+Bytes Serialize(const DeviceList& value);
+Bytes Serialize(const VoiceStatus& value);
+Bytes Serialize(const AudioLevel& value);
+Bytes Serialize(const KeyboardEvent& value);
+
+} // namespace axonkey::rpc
