@@ -18,7 +18,7 @@ if(MSVC)
   target_compile_options(ServiceLogging PRIVATE /W4 /permissive- /utf-8)
 endif()
 
-add_executable(AxonkeyService main.cpp ServiceConfig.cpp VoiceReceiver.cpp RpcServer.cpp
+add_executable(AxonkeyService main.cpp HidInterfaceGuid.cpp ServiceConfig.cpp VoiceReceiver.cpp RpcServer.cpp
     VoiceAudioSession.cpp VirtualMicrophoneSink.cpp
     ../../protobuf/axonkey_rpc.cpp
     ../driver/shared/src/QuarborDeviceSetup.cpp)

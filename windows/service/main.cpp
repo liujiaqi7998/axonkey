@@ -1,10 +1,8 @@
-#define INITGUID
 #include <windows.h>
 #include <dbt.h>
 #include <cfgmgr32.h>
 #include <setupapi.h>
 #include <hidsdi.h>
-#include <initguid.h>
 #include <QuarborDeviceSetup.h>
 #include <QuarborHidFilter.h>
 #include "ServiceConfig.h"
