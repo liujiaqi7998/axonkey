@@ -2,8 +2,10 @@
 
 #include <memory>
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include "AudioGain.h"
@@ -32,6 +34,7 @@ public:
     void Stop();
     bool Finished() const;
     void SetAudioGain(std::int32_t audioGainDb) { audioGainDb_.store(audioGainDb); }
+    std::optional<std::uint8_t> BatteryLevel() const;
     axonkey::rpc::VoiceStatus Status() const;
 
 private:

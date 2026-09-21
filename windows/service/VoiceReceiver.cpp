@@ -40,6 +40,8 @@ constexpr wchar_t kVoiceServiceUuid[] = L"{AB5E0001-5A21-4F05-BC7D-AF01F617B664}
 constexpr wchar_t kTransmitUuid[] = L"{AB5E0002-5A21-4F05-BC7D-AF01F617B664}";
 constexpr wchar_t kAudioUuid[] = L"{AB5E0003-5A21-4F05-BC7D-AF01F617B664}";
 constexpr wchar_t kControlUuid[] = L"{AB5E0004-5A21-4F05-BC7D-AF01F617B664}";
+constexpr wchar_t kBatteryServiceUuid[] = L"{0000180F-0000-1000-8000-00805F9B34FB}";
+constexpr wchar_t kBatteryLevelUuid[] = L"{00002A19-0000-1000-8000-00805F9B34FB}";
 
 const guid Guid(const wchar_t* text) { return guid{std::wstring_view(text)}; }
 
@@ -89,6 +91,7 @@ struct VoiceReceiver::State {
     bool connected = false;
     bool active = false;
     bool microphoneOpen = false;
+    std::optional<std::uint8_t> batteryLevel;
     std::uint16_t protocolVersion = 0;
     std::uint8_t sessionId = 0;
     VirtualMicrophoneSink microphone;
@@ -155,6 +158,52 @@ struct GattConnection {
     bool audioSubscribed = false;
     bool controlSubscribed = false;
 };
+
+std::optional<std::uint8_t> ReadBatteryLevel(const BluetoothLEDevice& device) {
+    if (!device) return {};
+    auto readWithMode = [&](BluetoothCacheMode mode) -> std::optional<std::uint8_t> {
+        const auto servicesResult = device.GetGattServicesForUuidAsync(
+            Guid(kBatteryServiceUuid), mode).get();
+        if (!servicesResult || servicesResult.Status() != GattCommunicationStatus::Success)
+            return {};
+        const auto services = servicesResult.Services();
+        if (!services) return {};
+        for (std::uint32_t index = 0; index < services.Size(); ++index) {
+            const auto service = services.GetAt(index);
+            if (!service) continue;
+            const auto characteristicResult = service.GetCharacteristicsForUuidAsync(
+                Guid(kBatteryLevelUuid), mode).get();
+            if (!characteristicResult ||
+                    characteristicResult.Status() != GattCommunicationStatus::Success)
+                continue;
+            const auto characteristics = characteristicResult.Characteristics();
+            if (!characteristics || characteristics.Size() == 0) continue;
+            const auto characteristic = characteristics.GetAt(0);
+            if (!characteristic) continue;
+            const auto read = characteristic.ReadValueAsync(mode).get();
+            if (!read || read.Status() != GattCommunicationStatus::Success || !read.Value())
+                continue;
+            const auto reader = DataReader::FromBuffer(read.Value());
+            if (!reader || reader.UnconsumedBufferLength() == 0) continue;
+            const auto level = reader.ReadByte();
+            if (level <= 100) return level;
+        }
+        return {};
+    };
+
+    // An active voice GATT connection makes an uncached read reliable. Keep a
+    // cached retry for devices that expose the value only after discovery.
+    for (const auto mode : {BluetoothCacheMode::Uncached, BluetoothCacheMode::Cached}) {
+        try {
+            if (const auto level = readWithMode(mode)) return level;
+        } catch (const hresult_error& error) {
+            LogError(L"RC003 battery read", error);
+        } catch (...) {
+            LogMessage(L"RC003 battery read failed", LogLevel::Error);
+        }
+    }
+    return {};
+}
 
 void CloseGatt(GattConnection& connection) noexcept {
     if (connection.audioSubscribed) {
@@ -223,6 +272,7 @@ void VoiceReceiver::Start() {
         state_->connected = false;
         state_->active = false;
         state_->microphoneOpen = false;
+        state_->batteryLevel.reset();
     }
     worker_ = std::thread(&VoiceReceiver::Run, this);
 }
@@ -243,6 +293,11 @@ void VoiceReceiver::Stop() {
 bool VoiceReceiver::Finished() const {
     std::lock_guard lock(state_->mutex);
     return state_->finished;
+}
+
+std::optional<std::uint8_t> VoiceReceiver::BatteryLevel() const {
+    std::lock_guard lock(state_->mutex);
+    return state_->batteryLevel;
 }
 
 axonkey::rpc::VoiceStatus VoiceReceiver::Status() const {
@@ -267,9 +322,17 @@ void VoiceReceiver::Run() {
         init_apartment(apartment_type::multi_threaded);
         apartmentInitialized = true;
         connection = ConnectGatt(deviceInstanceId_);
+        const auto initialBattery = ReadBatteryLevel(connection->device);
         {
             std::lock_guard lock(state->mutex);
             state->connected = true;
+            state->batteryLevel = initialBattery;
+        }
+        if (initialBattery) {
+            LogMessage(L"RC003 battery level read: " + std::to_wstring(*initialBattery) +
+                L"%; device=" + deviceInstanceId_);
+        } else {
+            LogMessage(L"RC003 battery level unavailable; device=" + deviceInstanceId_, LogLevel::Warning);
         }
         if (statusCallback_) statusCallback_(Status());
         session = std::make_unique<VoiceAudioSession>(state->microphone,
@@ -299,6 +362,7 @@ void VoiceReceiver::Run() {
         EnableNotifications(connection->control);
         WriteCharacteristic(connection->transmit, {0x0a, 0x01, 0x00, 0x00, 0x03, 0x03});
         LogMessage(L"RC003 ATVV notifications ready; GET_CAPS sent; device=" + deviceInstanceId_);
+        auto nextBatteryRefresh = std::chrono::steady_clock::now() + std::chrono::seconds(30);
 
         while (true) {
             VoiceEvent event;
@@ -315,6 +379,14 @@ void VoiceReceiver::Run() {
                     state->events.pop_front();
                     state->queuedBytes -= event.bytes.size();
                 }
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= nextBatteryRefresh) {
+                if (const auto battery = ReadBatteryLevel(connection->device)) {
+                    std::lock_guard lock(state->mutex);
+                    state->batteryLevel = battery;
+                }
+                nextBatteryRefresh = now + std::chrono::seconds(30);
             }
             if (connection->device.ConnectionStatus() == BluetoothConnectionStatus::Disconnected)
                 throw hresult_error(HRESULT_FROM_WIN32(ERROR_DEVICE_NOT_CONNECTED),
@@ -360,6 +432,7 @@ void VoiceReceiver::Run() {
         state->connected = false;
         state->active = false;
         state->microphoneOpen = false;
+        state->batteryLevel.reset();
         state->events.clear();
         state->queuedBytes = 0;
     }

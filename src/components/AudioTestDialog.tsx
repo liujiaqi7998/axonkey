@@ -3,7 +3,7 @@ import { SlidersHorizontal, Minus, Plus, RotateCcw, X } from 'lucide-react'
 import { useEffect, useReducer, useRef, useState } from 'react'
 import type { AudioProbe, Platform } from '../appTypes'
 import { audioGainMin, audioGainMax } from '../appConfig'
-import { audioTestMeasurementReducer, initialAudioTestMeasurement, automaticGainStep, gainAdjustedLevel, gainLevelTone } from '../audioGain'
+import { audioTestMeasurementReducer, initialAudioTestMeasurement, gainAdjustedLevel, gainLevelTone, suggestedAudioGain } from '../audioGain'
 
 type AudioLevel = { peak: number; rms: number }
 
@@ -21,7 +21,14 @@ export function AudioTestDialog({ platform, nativeRuntime, audioGain, audioGainR
   const dialogRef = useRef<HTMLDialogElement>(null)
   const [sample, setSample] = useState<[AudioProbe, AudioLevel] | null>(null)
   const [error, setError] = useState('')
+  const [windowsSuggestedGain, setWindowsSuggestedGain] = useState<number | null>(null)
   const [{ maximum, completed, suggestedGain }, updateMeasurement] = useReducer(audioTestMeasurementReducer, initialAudioTestMeasurement)
+  const windowsManagedGain = nativeRuntime && platform === 'windows'
+  const audioGainRef = useRef(audioGain)
+
+  useEffect(() => {
+    audioGainRef.current = audioGain
+  }, [audioGain])
 
   useEffect(() => {
     const dialog = dialogRef.current
@@ -41,12 +48,27 @@ export function AudioTestDialog({ platform, nativeRuntime, audioGain, audioGainR
           setSample(next)
           const valid = !next[0].error && next[0].driverInstalled && next[0].bluetoothConnected
           const forwarding = valid && next[0].forwarding
-          if (!valid || (forwarding && !wasForwarding)) updateMeasurement({ type: 'reset' })
+          if (!valid || (forwarding && !wasForwarding)) {
+            updateMeasurement({ type: 'reset' })
+            setWindowsSuggestedGain(null)
+          }
           if (valid && (forwarding || wasForwarding)) {
             updateMeasurement({ type: 'sample', peak: next[1].peak })
+            if (windowsManagedGain && forwarding) {
+              const relative = suggestedAudioGain(next[1].peak, audioGainMin, audioGainMax)
+              setWindowsSuggestedGain(relative === null
+                ? null
+                : Math.max(audioGainMin, Math.min(audioGainMax, audioGainRef.current + relative)))
+            }
           }
           if (wasForwarding && valid && !forwarding) {
-            updateMeasurement({ type: 'finish', minimum: audioGainMin, maximum: audioGainMax })
+            setWindowsSuggestedGain(null)
+            updateMeasurement({
+              type: 'finish',
+              minimum: audioGainMin,
+              maximum: audioGainMax,
+              currentGain: windowsManagedGain ? audioGainRef.current : undefined,
+            })
           }
           wasForwarding = forwarding
           setError('')
@@ -55,6 +77,7 @@ export function AudioTestDialog({ platform, nativeRuntime, audioGain, audioGainR
         if (active) {
           wasForwarding = false
           setSample(null)
+          setWindowsSuggestedGain(null)
           updateMeasurement({ type: 'reset' })
           setError(`无法读取音频状态：${String(cause)}`)
         }
@@ -68,8 +91,7 @@ export function AudioTestDialog({ platform, nativeRuntime, audioGain, audioGainR
 
   const [status, level] = sample ?? [null, { peak: 0, rms: 0 }]
   const supported = nativeRuntime && platform !== 'unsupported'
-  const windowsManagedGain = nativeRuntime && platform === 'windows'
-  const autoGainLastAt = useRef(0)
+  const displayedSuggestedGain = windowsManagedGain && windowsSuggestedGain !== null ? windowsSuggestedGain : suggestedGain
   const message = !supported ? '请在 macOS 或 Windows 桌面应用中测试，浏览器预览不提供真实音频。'
     : !audioGainReady ? '正在从 AxonkeyService 读取输入增益…'
       : error || status?.error || (!status ? '正在读取音频状态…'
@@ -84,30 +106,20 @@ export function AudioTestDialog({ platform, nativeRuntime, audioGain, audioGainR
   const tone = gainLevelTone(adjustedPeak)
   const meterValue = adjustedPeak > 0 ? Math.max(0, Math.min(100, (20 * Math.log10(adjustedPeak) + 60) / 60 * 100)) : 0
 
-  useEffect(() => {
-    if (!windowsManagedGain || !audioGainReady || !status?.forwarding || !(level.peak > 0) || !Number.isFinite(level.peak)) return
-    const now = Date.now()
-    if (now - autoGainLastAt.current < 500) return
-    const next = automaticGainStep(level.peak, audioGain, audioGainMin, audioGainMax)
-    if (next === audioGain) return
-    autoGainLastAt.current = now
-    onAudioGainChange(next)
-  }, [windowsManagedGain, audioGainReady, status?.forwarding, level.peak, audioGain, onAudioGainChange])
-
   const ready = supported && audioGainReady && !!status?.driverInstalled && !!status.bluetoothConnected && !error && !status.error && !gainError
   const resultTone = !ready || !completed ? 'silent' : maximum >= 0.999 ? 'clipping' : gainLevelTone(adjustedMaximum)
   const result = {
     silent: { title: '等待正常讲话', hint: '按住语音键，以日常距离和音量说“音频测试，一二三”，持续几秒。' },
-    low: { title: '音量偏低 · 请提高增益', hint: windowsManagedGain ? '使用下方滑条逐步提高增益，直到显示绿色 OK。不要根据静音或背景噪声调整。' : '松开语音键后，点击“应用建议”或逐步提高增益，直到显示绿色 OK。不要根据静音或背景噪声调整。' },
+    low: { title: '音量偏低 · 请提高增益', hint: '点击“应用建议”或逐步提高增益，直到显示绿色 OK。不要根据静音或背景噪声调整。' },
     good: { title: 'OK · 增益合适', hint: '本次讲话的估算峰值在合适范围内，可以保留当前设置。再录一小段回放，确认声音清晰。' },
-    hot: { title: '音量偏高 · 请降低增益', hint: windowsManagedGain ? '使用下方滑条逐步降低增益，直到显示绿色 OK，为较大音量留出余量。' : '点击“应用建议”或逐步降低增益，直到显示绿色 OK，为较大音量留出余量。' },
+    hot: { title: '音量偏高 · 请降低增益', hint: '点击“应用建议”或逐步降低增益，直到显示绿色 OK，为较大音量留出余量。' },
     clipping: { title: '音量过大 · 有失真风险', hint: maximum >= 0.999 ? windowsManagedGain ? '服务输出已接近满幅，请降低增益并再次按住语音键正常讲话。' : '原始声音已接近满幅，请离遥控器远一些，再按住语音键正常讲话。' : '请降低增益，直到显示绿色 OK。红色表示音量过大，不是测试通过。' },
   }[resultTone]
 
   return <dialog ref={dialogRef} className="audio-test-dialog" aria-labelledby="audio-test-title" onCancel={onClose} onClick={(event) => { if (event.target === event.currentTarget) onClose() }}>
     <div className="audio-test-content">
       <header><div><SlidersHorizontal size={20} /><h2 id="audio-test-title">校准音量</h2></div><button type="button" className="dialog-close" aria-label="关闭音量校准" onClick={onClose} autoFocus><X size={18} /></button></header>
-      <p className="audio-test-intro">{windowsManagedGain ? '按住语音键正常讲话，AxonkeyService 会根据实时电平自动微调输入增益；也可以使用下方滑条手动调整。' : '按住语音键正常讲话，松开后统一计算建议；再次按下会自动开始新一轮测试。'}</p>
+      <p className="audio-test-intro">{windowsManagedGain ? '按住语音键正常讲话，松开后查看 AxonkeyService 根据实时电平计算的建议增益；点击“应用建议”后才会写入服务。' : '按住语音键正常讲话，松开后统一计算建议；再次按下会自动开始新一轮测试。'}</p>
       <div className="audio-test-layout">
         <section className="audio-test-gain" aria-label="输入增益调整">
           <h3>1. 按住讲话，松开后调整</h3>
@@ -120,11 +132,9 @@ export function AudioTestDialog({ platform, nativeRuntime, audioGain, audioGainR
             <button type="button" className="dialog-secondary" aria-label="提高 1 dB" title="提高 1 dB" disabled={!supported || !audioGainReady || audioGain >= audioGainMax} onClick={() => onAudioGainChange(audioGain + 1)}><Plus size={16} /></button>
             <button type="button" className="dialog-secondary" aria-label="恢复默认增益 0 dB" title="恢复默认增益 0 dB" disabled={!supported || !audioGainReady || audioGain === 0} onClick={() => onAudioGainChange(0)}><RotateCcw size={16} /></button>
           </div>
-          <p>{windowsManagedGain ? 'Windows 上的增益由 AxonkeyService 保存；通道活动时会按实时电平自动微调。' : '无需追求固定数值，设置自动保存并与首页同步。'}</p>
-          {windowsManagedGain
-            ? completed && maximum >= 0.999 && <p className="audio-test-gain-error">服务输出已接近满幅，降低输入增益后再次按住语音键测试；如果仍然削波，请降低说话音量。</p>
-            : completed && maximum >= 0.999 ? <p className="audio-test-gain-error">原始输入已接近满幅，降低软件增益无法修复源头失真。请远离麦克风或降低说话音量，再次按住语音键测试。</p>
-              : <div className="audio-test-suggestion"><span>{!completed ? '按住语音键讲话，松开后自动计算建议。' : suggestedGain === null ? '本次测试无法给出建议，请再次按住语音键测试。' : `建议增益 ${suggestedGain > 0 ? '+' : ''}${suggestedGain} dB。`}</span><button type="button" className="dialog-secondary" disabled={!ready || suggestedGain === null || suggestedGain === audioGain} onClick={() => { if (suggestedGain !== null) onAudioGainChange(suggestedGain) }}>应用建议</button></div>}
+          <p>{windowsManagedGain ? 'Windows 上的增益由 AxonkeyService 保存；测量结果只写入下方建议，点击按钮后才应用。' : '无需追求固定数值，设置自动保存并与首页同步。'}</p>
+          {completed && maximum >= 0.999 && <p className="audio-test-gain-error">{windowsManagedGain ? '服务输出已接近满幅，建议先降低增益并再次按住语音键测试；如果仍然削波，请降低说话音量。' : '原始输入已接近满幅，降低软件增益无法修复源头失真。请远离麦克风或降低说话音量，再次按住语音键测试。'}</p>}
+          <div className="audio-test-suggestion"><span>{!completed && displayedSuggestedGain === null ? '按住语音键讲话，松开后自动计算建议。' : displayedSuggestedGain === null ? '本次测试无法给出建议，请再次按住语音键测试。' : `建议增益 ${displayedSuggestedGain > 0 ? '+' : ''}${displayedSuggestedGain} dB。`}</span><button type="button" className="dialog-secondary" disabled={!ready || !completed || displayedSuggestedGain === null || displayedSuggestedGain === audioGain} onClick={() => { if (displayedSuggestedGain !== null) onAudioGainChange(displayedSuggestedGain) }}>应用建议</button></div>
           {gainError && <p role="alert" className="audio-test-gain-error">{gainError}</p>}
         </section>
         <section className={`audio-test-meter ${tone}`}>
@@ -146,7 +156,7 @@ export function AudioTestDialog({ platform, nativeRuntime, audioGain, audioGainR
         <summary>详细电平与测量说明</summary>
         <dl><div><dt>{windowsManagedGain ? '服务峰值' : '原始峰值'}</dt><dd>{decibels(level.peak)}</dd></div><div><dt>{windowsManagedGain ? '当前峰值' : '增益后估算'}</dt><dd>{decibels(adjustedPeak)}</dd></div><div><dt>{windowsManagedGain ? '本次最高峰值' : '本次最高估算'}</dt><dd>{decibels(adjustedMaximum)}</dd></div></dl>
         <dl><div><dt>{windowsManagedGain ? '服务 RMS' : '原始 RMS'}</dt><dd>{decibels(level.rms)}</dd></div><div><dt>{windowsManagedGain ? '当前 RMS' : '估算 RMS'}</dt><dd>{decibels(windowsManagedGain ? level.rms : gainAdjustedLevel(level.rms, audioGain))}</dd></div><div><dt>参考峰值范围</dt><dd>−24 至 −6 dBFS</dd></div></dl>
-        <p className="audio-test-note">每次语音开始后的前 200ms 不参与测试电平{windowsManagedGain ? '' : '和增益建议'}，实际转发音频不受影响。测试峰值再剔除每批振幅最高的 1% 样本（不足 100 个时不剔除），这项过滤不改变 RMS。{windowsManagedGain ? 'Windows 数值来自 AxonkeyService 已施加增益后的实时电平，自动调节以约 −12 dBFS 为目标。' : '增益后数值是估算，超过 0 dBFS 表示削波风险，短暂削波仍可能被过滤。'}{windowsManagedGain ? '电平不能区分语音与噪声' : '建议不能区分语音与噪声'}，请以录音回放为准；本窗口不播放或保存录音。</p>
+        <p className="audio-test-note">每次语音开始后的前 200ms 不参与测试电平{windowsManagedGain ? '' : '和增益建议'}，实际转发音频不受影响。测试峰值再剔除每批振幅最高的 1% 样本（不足 100 个时不剔除），这项过滤不改变 RMS。{windowsManagedGain ? 'Windows 数值来自 AxonkeyService 已施加增益后的实时电平，松开语音键后计算约 −12 dBFS 的建议值。' : '增益后数值是估算，超过 0 dBFS 表示削波风险，短暂削波仍可能被过滤。'}{windowsManagedGain ? '电平不能区分语音与噪声' : '建议不能区分语音与噪声'}，请以录音回放为准；本窗口不播放或保存录音。</p>
       </details>
       <footer><button type="button" className="dialog-secondary" onClick={onClose}>关闭</button></footer>
     </div>

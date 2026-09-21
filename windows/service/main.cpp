@@ -109,9 +109,10 @@ std::optional<std::uint8_t> BluetoothBatteryLevel(
     namespace gatt = winrt::Windows::Devices::Bluetooth::GenericAttributeProfile;
     using winrt::Windows::Devices::Bluetooth::BluetoothCacheMode;
     using winrt::Windows::Storage::Streams::DataReader;
-    try {
+    if (!device) return {};
+    auto readWithMode = [&](BluetoothCacheMode mode) -> std::optional<std::uint8_t> {
         const auto servicesResult = device.GetGattServicesForUuidAsync(
-            BluetoothGuid(kBatteryServiceUuid), BluetoothCacheMode::Cached).get();
+            BluetoothGuid(kBatteryServiceUuid), mode).get();
         if (!servicesResult || servicesResult.Status() != gatt::GattCommunicationStatus::Success)
             return {};
         const auto services = servicesResult.Services();
@@ -120,7 +121,7 @@ std::optional<std::uint8_t> BluetoothBatteryLevel(
             const auto service = services.GetAt(index);
             if (!service) continue;
             const auto characteristicResult = service.GetCharacteristicsForUuidAsync(
-                BluetoothGuid(kBatteryLevelUuid), BluetoothCacheMode::Cached).get();
+                BluetoothGuid(kBatteryLevelUuid), mode).get();
             if (!characteristicResult ||
                     characteristicResult.Status() != gatt::GattCommunicationStatus::Success)
                 continue;
@@ -128,7 +129,7 @@ std::optional<std::uint8_t> BluetoothBatteryLevel(
             if (!characteristics || characteristics.Size() == 0) continue;
             const auto characteristic = characteristics.GetAt(0);
             if (!characteristic) continue;
-            const auto read = characteristic.ReadValueAsync(BluetoothCacheMode::Cached).get();
+            const auto read = characteristic.ReadValueAsync(mode).get();
             if (!read || read.Status() != gatt::GattCommunicationStatus::Success || !read.Value())
                 continue;
             const auto reader = DataReader::FromBuffer(read.Value());
@@ -136,7 +137,13 @@ std::optional<std::uint8_t> BluetoothBatteryLevel(
             const auto level = reader.ReadByte();
             if (level <= 100) return level;
         }
-    } catch (...) {}
+        return {};
+    };
+    for (const auto mode : {BluetoothCacheMode::Uncached, BluetoothCacheMode::Cached}) {
+        try {
+            if (const auto level = readWithMode(mode)) return level;
+        } catch (...) {}
+    }
     return {};
 }
 
@@ -569,7 +576,12 @@ private:
             axonkey::rpc::Device device;
             device.instanceId = WideToUtf8(target);
             device.driverMounted = true;
-            device.batteryLevel = bluetooth.batteryLevel;
+            // VoiceReceiver already owns the successfully opened GATT device;
+            // prefer its battery snapshot over a second service discovery.
+            const auto voice = voices_.find(target);
+            const auto voiceBattery = voice == voices_.end() ? std::optional<std::uint8_t>{}
+                : voice->second->BatteryLevel();
+            device.batteryLevel = voiceBattery ? voiceBattery : bluetooth.batteryLevel;
             device.descriptionName = WideToUtf8(bluetooth.descriptionName);
             for (const auto& endpoint : active_) if (endpoint->InstanceId() == target) {
                 device.endpointPath = WideToUtf8(endpoint->Path());

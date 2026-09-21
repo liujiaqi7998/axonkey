@@ -15,13 +15,6 @@ export function gainLevelTone(peak: number): 'silent' | 'low' | 'good' | 'hot' |
   return decibels < -24 ? 'low' : 'good'
 }
 
-export function automaticGainStep(peak: number, current: number, minimum: number, maximum: number, targetDb = -12) {
-  if (!Number.isFinite(peak) || peak <= 0) return current
-  const correction = Math.round(targetDb - 20 * Math.log10(peak))
-  if (Math.abs(correction) < 2) return current
-  return Math.max(minimum, Math.min(maximum, current + Math.max(-3, Math.min(3, correction))))
-}
-
 export type AudioTestMeasurement = {
   maximum: number
   completed: boolean
@@ -35,7 +28,7 @@ export const initialAudioTestMeasurement: AudioTestMeasurement = {
 export function audioTestMeasurementReducer(state: AudioTestMeasurement, action:
   | { type: 'sample'; peak: number }
   | { type: 'reset' }
-  | { type: 'finish'; minimum: number; maximum: number }
+  | { type: 'finish'; minimum: number; maximum: number; currentGain?: number }
 ): AudioTestMeasurement {
   if (action.type === 'reset') return initialAudioTestMeasurement
   if (state.completed) return state
@@ -44,9 +37,12 @@ export function audioTestMeasurementReducer(state: AudioTestMeasurement, action:
     return { ...state, maximum: action.peak }
   }
   if (state.maximum <= 0) return state
+  const suggested = suggestedAudioGain(state.maximum, action.minimum, action.maximum)
   return {
     ...state,
     completed: true,
-    suggestedGain: suggestedAudioGain(state.maximum, action.minimum, action.maximum),
+    suggestedGain: suggested === null || action.currentGain === undefined
+      ? suggested
+      : Math.max(action.minimum, Math.min(action.maximum, action.currentGain + suggested)),
   }
 }

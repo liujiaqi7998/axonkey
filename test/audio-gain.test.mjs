@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { audioTestMeasurementReducer, initialAudioTestMeasurement, automaticGainStep, gainAdjustedLevel, gainLevelTone, suggestedAudioGain } from '../src/audioGain.ts'
+import { audioTestMeasurementReducer, initialAudioTestMeasurement, gainAdjustedLevel, gainLevelTone, suggestedAudioGain } from '../src/audioGain.ts'
 
 test('gain estimate preserves silence and exposes clipping instead of hiding it', () => {
   assert.equal(gainAdjustedLevel(0, 30), 0)
@@ -30,15 +30,6 @@ test('feedback distinguishes silence, low volume, reference range, headroom and 
   assert.equal(gainLevelTone(2), 'clipping')
 })
 
-test('automatic Windows gain correction is bounded and leaves the reference range stable', () => {
-  assert.equal(automaticGainStep(0, 0, -30, 30), 0)
-  assert.equal(automaticGainStep(0.01, 0, -30, 30), 3)
-  assert.equal(automaticGainStep(0.25, 0, -30, 30), 0)
-  assert.equal(automaticGainStep(0.9, 0, -30, 30), -3)
-  assert.equal(automaticGainStep(0.01, 29, -30, 30), 30)
-})
-
-
 test('recommendation is calculated once after the whole measurement and frozen until reset', () => {
   let state = audioTestMeasurementReducer(initialAudioTestMeasurement, { type: 'sample', peak: 0.1 })
   state = audioTestMeasurementReducer(state, { type: 'sample', peak: 0.25 })
@@ -49,6 +40,11 @@ test('recommendation is calculated once after the whole measurement and frozen u
   state = audioTestMeasurementReducer(state, { type: 'finish', minimum: -30, maximum: 30 })
   assert.equal(state.completed, true)
   assert.equal(state.suggestedGain, 0)
+  const managed = audioTestMeasurementReducer(
+    audioTestMeasurementReducer(initialAudioTestMeasurement, { type: 'sample', peak: 0.01 }),
+    { type: 'finish', minimum: -30, maximum: 30, currentGain: 4 },
+  )
+  assert.equal(managed.suggestedGain, 30)
   assert.strictEqual(audioTestMeasurementReducer(state, { type: 'sample', peak: 1 }), state)
   assert.strictEqual(audioTestMeasurementReducer(state, { type: 'finish', minimum: 10, maximum: 30 }), state)
   assert.deepEqual(audioTestMeasurementReducer(state, { type: 'reset' }), initialAudioTestMeasurement)
