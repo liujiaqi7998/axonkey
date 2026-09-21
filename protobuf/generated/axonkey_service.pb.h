@@ -80,8 +80,8 @@ typedef struct _axonkey_service_v1_Device {
     bool input_blocked;
     bool data_forward_enabled;
     bool connected;
-    /* Best-effort Bluetooth metadata. Omitted/empty means Windows could not
- read the value during this request. */
+    /* Optional device metadata. Omitted/empty means the service could not
+     * read the value during this request. */
     bool has_battery_level;
     uint32_t battery_level;
     pb_callback_t description_name;

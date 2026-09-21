@@ -966,7 +966,6 @@ async fn launch_driver_action(
 #[tauri::command]
 fn open_windows_settings(page: String) -> Result<(), String> {
     let uri = match page.as_str() {
-        "bluetooth" => "ms-settings:bluetooth",
         "sound" => "ms-settings:sound",
         _ => return Err("Unsupported settings page".into()),
     };
@@ -1147,164 +1146,141 @@ struct SystemProbe {
     capture_active: bool,
 }
 
-#[cfg(target_os = "windows")]
-fn powershell_output(expression: &str) -> Option<String> {
-    use std::os::windows::process::CommandExt;
-
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let mut command = std::process::Command::new("powershell.exe");
-    command
-        .creation_flags(CREATE_NO_WINDOW)
-        .arg("-NoProfile")
-        .arg("-NonInteractive")
-        .arg("-Command")
-        .arg(expression);
-    command
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| {
-            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            (!value.is_empty()).then_some(value)
-        })
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowsDeviceInfo {
+    instance_id: String,
+    endpoint_path: String,
+    driver_mounted: bool,
+    input_blocked: bool,
+    data_forward_enabled: bool,
+    connected: bool,
+    battery_level: Option<u32>,
+    description_name: String,
 }
 
-#[cfg(target_os = "windows")]
-fn powershell_probe(expression: &str) -> bool {
-    powershell_output(expression).as_deref() == Some("1")
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowsDevicesProbe {
+    service_available: bool,
+    device: Option<WindowsDeviceInfo>,
+    error: Option<String>,
 }
 
-#[cfg(any(target_os = "windows", test))]
-fn parse_battery_level(value: &str) -> Option<u8> {
-    value
-        .trim()
-        .parse::<u8>()
-        .ok()
-        .filter(|level| *level <= 100)
-}
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn probe_rc003_battery_level(app: tauri::AppHandle) -> Option<u8> {
+    use tauri::Manager;
 
-#[cfg(target_os = "windows")]
-fn rc003_battery_level() -> Option<u8> {
-    const SCRIPT: &str = r#"
-$ErrorActionPreference = 'Stop'
-try {
-    $target = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
-        Where-Object { $_.InstanceId -match '^HID\\.*(?:VID_2717|VID&012717).*(?:PID_32B8|PID&32B8)' } |
-        Select-Object -First 1
-
-    if (-not $target) {
-        $target = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
-            Where-Object { $_.InstanceId -match 'BTHLEDEVICE\\\{0000180F-0000-1000-8000-00805F9B34FB\}_DEV_.*(?:VID_2717|VID&012717).*(?:PID_32B8|PID&32B8)' } |
-            Select-Object -First 1
-    }
-    if (-not $target) { return }
-
-    $addressMatch = [regex]::Match($target.InstanceId, '_([0-9A-F]{12})\\', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-    if (-not $addressMatch.Success) { return }
-
-    Add-Type -AssemblyName System.Runtime.WindowsRuntime
-    [void][Windows.Devices.Bluetooth.BluetoothLEDevice, Windows.Devices.Bluetooth, ContentType=WindowsRuntime]
-    [void][Windows.Devices.Bluetooth.BluetoothCacheMode, Windows.Devices.Bluetooth, ContentType=WindowsRuntime]
-    [void][Windows.Devices.Bluetooth.GenericAttributeProfile.GattDeviceServicesResult, Windows.Devices.Bluetooth, ContentType=WindowsRuntime]
-    [void][Windows.Devices.Bluetooth.GenericAttributeProfile.GattCharacteristicsResult, Windows.Devices.Bluetooth, ContentType=WindowsRuntime]
-    [void][Windows.Devices.Bluetooth.GenericAttributeProfile.GattReadResult, Windows.Devices.Bluetooth, ContentType=WindowsRuntime]
-    [void][Windows.Storage.Streams.IBuffer, Windows.Storage.Streams, ContentType=WindowsRuntime]
-
-    function Await-Result($operation, [Type]$resultType) {
-        $asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() |
-            Where-Object { $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1 } |
-            Select-Object -First 1
-        $task = $asTask.MakeGenericMethod($resultType).Invoke($null, @($operation))
-        $task.Wait()
-        $task.Result
-    }
-
-    $address = [Convert]::ToUInt64($addressMatch.Groups[1].Value, 16)
-    $device = Await-Result ([Windows.Devices.Bluetooth.BluetoothLEDevice]::FromBluetoothAddressAsync($address)) ([Windows.Devices.Bluetooth.BluetoothLEDevice])
-    if (-not $device) { return }
-
-    $services = Await-Result ($device.GetGattServicesForUuidAsync([Guid]'0000180f-0000-1000-8000-00805f9b34fb', [Windows.Devices.Bluetooth.BluetoothCacheMode]::Cached)) ([Windows.Devices.Bluetooth.GenericAttributeProfile.GattDeviceServicesResult])
-    if ($services.Status.ToString() -ne 'Success') { return }
-    $service = $services.Services | Select-Object -First 1
-    if (-not $service) { return }
-
-    $characteristics = Await-Result ($service.GetCharacteristicsForUuidAsync([Guid]'00002a19-0000-1000-8000-00805f9b34fb', [Windows.Devices.Bluetooth.BluetoothCacheMode]::Cached)) ([Windows.Devices.Bluetooth.GenericAttributeProfile.GattCharacteristicsResult])
-    if ($characteristics.Status.ToString() -ne 'Success') { return }
-    $characteristic = $characteristics.Characteristics | Select-Object -First 1
-    if (-not $characteristic) { return }
-
-    $read = Await-Result ($characteristic.ReadValueAsync([Windows.Devices.Bluetooth.BluetoothCacheMode]::Cached)) ([Windows.Devices.Bluetooth.GenericAttributeProfile.GattReadResult])
-    if ($read.Status.ToString() -ne 'Success' -or $read.Value.Length -lt 1) { return }
-
-    $toArray = [System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBufferExtensions].GetMethods() |
-        Where-Object { $_.Name -eq 'ToArray' -and $_.GetParameters().Count -eq 1 } |
-        Select-Object -First 1
-    $bytes = $toArray.Invoke($null, @($read.Value))
-    if ($bytes.Count -gt 0) { [int]$bytes[0] }
-    $device.Dispose()
-} catch {
-    return
-}
-"#;
-
-    powershell_output(SCRIPT).and_then(|value| parse_battery_level(&value))
+    app.state::<AudioService>().status().battery_level
 }
 
 #[tauri::command]
-async fn probe_rc003_battery_level(app: tauri::AppHandle) -> Option<u8> {
+async fn get_windows_devices(
+    #[cfg(target_os = "windows")] rpc: tauri::State<'_, service_rpc::ServiceConnection>,
+) -> Result<WindowsDevicesProbe, String> {
     #[cfg(target_os = "windows")]
     {
-        let _ = app;
-        tauri::async_runtime::spawn_blocking(rc003_battery_level)
-            .await
-            .unwrap_or_default()
+        match rpc.get_devices().await {
+            Ok(mut devices) => Ok(WindowsDevicesProbe {
+                service_available: true,
+                device: devices.drain(..).next().map(|device| WindowsDeviceInfo {
+                    instance_id: device.instance_id,
+                    endpoint_path: device.endpoint_path,
+                    driver_mounted: device.driver_mounted,
+                    input_blocked: device.input_blocked,
+                    data_forward_enabled: device.data_forward_enabled,
+                    connected: device.connected,
+                    battery_level: device.battery_level,
+                    description_name: device.description_name,
+                }),
+                error: None,
+            }),
+            Err(service_rpc::GetDevicesError::ServiceUnavailable(error)) => Ok(WindowsDevicesProbe {
+                service_available: false,
+                device: None,
+                error: Some(error.to_string()),
+            }),
+            Err(service_rpc::GetDevicesError::Request(error)) => Ok(WindowsDevicesProbe {
+                service_available: true,
+                device: None,
+                error: Some(error.to_string()),
+            }),
+        }
     }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("设备服务仅支持 Windows。".into())
+    }
+}
 
-    #[cfg(target_os = "macos")]
+#[tauri::command]
+fn probe_audio_available(
+    app: tauri::AppHandle,
+    audio_service: tauri::State<'_, AudioService>,
+) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
     {
         use tauri::Manager;
 
-        app.state::<AudioService>().status().battery_level
-    }
-
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        let _ = app;
-        None
-    }
-}
-
-#[tauri::command]
-fn probe_audio_available(audio_service: tauri::State<'_, AudioService>) -> Result<bool, String> {
-    #[cfg(target_os = "windows")]
-    {
-        audio_service.refresh();
-        Ok(audio_service.status().driver_installed)
+        let _ = audio_service;
+        return Ok(app
+            .state::<service_rpc::ServiceConnection>()
+            .audio_test_state()
+            .0
+            .driver_installed);
     }
 
     #[cfg(target_os = "macos")]
     {
+        let _ = app;
         Ok(audio_service.status().driver_installed)
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let _ = audio_service;
+        let _ = (app, audio_service);
         Ok(false)
     }
 }
 
 #[tauri::command]
-fn probe_audio_state(audio_service: tauri::State<'_, AudioService>) -> AudioServiceStatus {
-    audio_service.refresh();
-    audio_service.status()
+fn probe_audio_state(
+    app: tauri::AppHandle,
+    audio_service: tauri::State<'_, AudioService>,
+) -> AudioServiceStatus {
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::Manager;
+
+        let _ = audio_service;
+        return app.state::<service_rpc::ServiceConnection>().audio_test_state().0;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        audio_service.refresh();
+        audio_service.status()
+    }
 }
 
 #[tauri::command]
 fn get_audio_test_state(
+    app: tauri::AppHandle,
     audio_service: tauri::State<'_, AudioService>,
 ) -> (AudioServiceStatus, audio_service::AudioLevel) {
-    (audio_service.status(), audio_service.level())
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::Manager;
+
+        let _ = audio_service;
+        return app.state::<service_rpc::ServiceConnection>().audio_test_state();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        (audio_service.status(), audio_service.level())
+    }
 }
 
 #[tauri::command]
@@ -1350,13 +1326,8 @@ async fn probe_rc003_connected(app: tauri::AppHandle) -> Result<bool, String> {
 
     #[cfg(target_os = "windows")]
     {
-        tauri::async_runtime::spawn_blocking(|| {
-            powershell_probe(
-                r#"if (@(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'OK' -and $_.InstanceId -match '(?:VID_2717|VID&012717).*(?:PID_32B8|PID&32B8)' }).Count -gt 0) { '1' } else { '0' }"#,
-            )
-        })
-        .await
-        .map_err(|error| format!("Device probe task failed unexpectedly: {error}"))
+        let _ = app;
+        Ok(false)
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -1574,7 +1545,9 @@ pub fn run() {
             get_audio_gain,
             set_audio_gain,
             probe_rc003_connected,
+            #[cfg(target_os = "macos")]
             probe_rc003_battery_level,
+            get_windows_devices,
             update_input_settings,
             write_mapping_file,
         ])
@@ -1595,9 +1568,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        app_bundle_for_executable, args_request_autostart, parse_battery_level, rc003_connected,
-    };
+    use super::{app_bundle_for_executable, args_request_autostart, rc003_connected};
 
     #[test]
     fn recognizes_only_the_autostart_launch_argument() {
@@ -1616,15 +1587,6 @@ mod tests {
         assert!(rc003_connected(false, true));
         assert!(rc003_connected(true, false));
         assert!(!rc003_connected(false, false));
-    }
-
-    #[test]
-    fn parses_valid_battery_percentages_only() {
-        assert_eq!(parse_battery_level("91\r\n"), Some(91));
-        assert_eq!(parse_battery_level("0"), Some(0));
-        assert_eq!(parse_battery_level("100"), Some(100));
-        assert_eq!(parse_battery_level("101"), None);
-        assert_eq!(parse_battery_level("unknown"), None);
     }
 
     #[test]

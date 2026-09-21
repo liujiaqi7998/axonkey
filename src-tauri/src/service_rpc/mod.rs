@@ -10,6 +10,8 @@ use tokio::{
     sync::watch,
 };
 
+use crate::audio_service::{AudioLevel, AudioServiceStatus};
+
 #[allow(dead_code)] // Other schema messages are reserved for future RPC methods.
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/axonkey.service.v1.rs"));
@@ -39,26 +41,108 @@ pub struct ServiceRpcInfo {
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceRpcStatus {
-    connected: bool,
-    info: Option<ServiceRpcInfo>,
-    error: Option<String>,
+    pub connected: bool,
+    pub info: Option<ServiceRpcInfo>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceRpcDevice {
+    pub instance_id: String,
+    pub endpoint_path: String,
+    pub driver_mounted: bool,
+    pub input_blocked: bool,
+    pub data_forward_enabled: bool,
+    pub connected: bool,
+    pub battery_level: Option<u32>,
+    pub description_name: String,
+}
+
+pub enum GetDevicesError {
+    ServiceUnavailable(io::Error),
+    Request(io::Error),
+}
+
+impl std::fmt::Display for GetDevicesError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ServiceUnavailable(error) => write!(formatter, "{error}"),
+            Self::Request(error) => write!(formatter, "{error}"),
+        }
+    }
 }
 
 // Managed by Tauri for the lifetime of the desktop process.
 pub struct ServiceConnection {
     state: watch::Receiver<ConnectionState>,
+    audio_level: watch::Receiver<Option<proto::AudioLevel>>,
+    voice_status: watch::Receiver<Option<proto::VoiceStatus>>,
     task: tauri::async_runtime::JoinHandle<()>,
 }
 
 impl ServiceConnection {
     pub fn start() -> Self {
         let (sender, state) = watch::channel(ConnectionState::Disconnected { error: None });
-        let task = tauri::async_runtime::spawn(run(sender));
-        Self { state, task }
+        let (audio_sender, audio_level) = watch::channel(None);
+        let (voice_sender, voice_status) = watch::channel(None);
+        let task = tauri::async_runtime::spawn(run(sender, audio_sender, voice_sender));
+        Self {
+            state,
+            audio_level,
+            voice_status,
+            task,
+        }
     }
 
     pub fn status(&self) -> ServiceRpcStatus {
         status_from_state(&self.state.borrow())
+    }
+
+    /// Returns the most recent service-published level and voice state. These
+    /// snapshots are updated by the persistent Subscribe pipe listener.
+    pub fn audio_test_state(&self) -> (AudioServiceStatus, AudioLevel) {
+        let connected = matches!(*self.state.borrow(), ConnectionState::Connected(_));
+        let level = self.audio_level.borrow().clone();
+        let voice = self.voice_status.borrow().clone();
+        let voice_connected = voice.as_ref().is_some_and(|value| value.connected);
+        let forwarding = voice.as_ref().is_some_and(|value| value.active);
+        let state = if !connected {
+            "error"
+        } else if forwarding {
+            "forwarding"
+        } else if voice_connected {
+            "ready"
+        } else {
+            "connecting"
+        };
+        let error = if connected {
+            None
+        } else {
+            match &*self.state.borrow() {
+                ConnectionState::Disconnected { error } => error.clone(),
+                ConnectionState::Connected(_) => None,
+            }
+        };
+        let status = AudioServiceStatus {
+            // The service owns the Windows virtual microphone. A connected
+            // RPC endpoint is the authoritative driver/service availability
+            // signal for this client-side diagnostic view.
+            driver_installed: connected,
+            state: state.into(),
+            bluetooth_connected: voice_connected,
+            forwarding,
+            received_data: level.is_some(),
+            output_ready: connected,
+            event_version: level.as_ref().map_or(0, |value| value.timestamp_ms),
+            error,
+            ..AudioServiceStatus::default()
+        };
+        let level = level.map_or_else(AudioLevel::default, |value| AudioLevel {
+            peak: f64::from(value.peak),
+            rms: f64::from(value.rms),
+        });
+        (status, level)
     }
 
     pub async fn get_service_status(&self) -> io::Result<bool> {
@@ -112,7 +196,10 @@ impl ServiceConnection {
         i16::try_from(info.audio_gain_db).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("AxonkeyService returned an invalid audio gain: {} dB", info.audio_gain_db),
+                format!(
+                    "AxonkeyService returned an invalid audio gain: {} dB",
+                    info.audio_gain_db
+                ),
             )
         })
     }
@@ -145,6 +232,37 @@ impl ServiceConnection {
             ))
         }
     }
+
+    pub async fn get_devices(&self) -> Result<Vec<ServiceRpcDevice>, GetDevicesError> {
+        let mut pipe = open_pipe().await.map_err(GetDevicesError::ServiceUnavailable)?;
+        let devices: proto::DeviceList = tokio::time::timeout(
+            PROBE_TIMEOUT,
+            call(
+                &mut pipe,
+                next_request_id(),
+                "GetDevices",
+                &proto::DeviceListRequest {},
+            ),
+        )
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "GetDevices timed out"))
+        .and_then(|result| result)
+        .map_err(GetDevicesError::Request)?;
+        Ok(devices
+            .devices
+            .into_iter()
+            .map(|device| ServiceRpcDevice {
+                instance_id: device.instance_id,
+                endpoint_path: device.endpoint_path,
+                driver_mounted: device.driver_mounted,
+                input_blocked: device.input_blocked,
+                data_forward_enabled: device.data_forward_enabled,
+                connected: device.connected,
+                battery_level: device.battery_level,
+                description_name: device.description_name,
+            })
+            .collect())
+    }
 }
 
 fn status_from_state(state: &ConnectionState) -> ServiceRpcStatus {
@@ -173,10 +291,14 @@ impl Drop for ServiceConnection {
     }
 }
 
-async fn run(state: watch::Sender<ConnectionState>) {
+async fn run(
+    state: watch::Sender<ConnectionState>,
+    audio_sender: watch::Sender<Option<proto::AudioLevel>>,
+    voice_sender: watch::Sender<Option<proto::VoiceStatus>>,
+) {
     let mut last_error = None;
     loop {
-        let result = connect_and_monitor(&state).await;
+        let result = connect_and_monitor(&state, &audio_sender, &voice_sender).await;
         if matches!(*state.borrow(), ConnectionState::Connected(_)) {
             last_error = None;
         }
@@ -189,11 +311,17 @@ async fn run(state: watch::Sender<ConnectionState>) {
             last_error = Some(error.clone());
         }
         state.send_replace(ConnectionState::Disconnected { error: Some(error) });
+        audio_sender.send_replace(None);
+        voice_sender.send_replace(None);
         tokio::time::sleep(RETRY_INTERVAL).await;
     }
 }
 
-async fn connect_and_monitor(state: &watch::Sender<ConnectionState>) -> io::Result<()> {
+async fn connect_and_monitor(
+    state: &watch::Sender<ConnectionState>,
+    audio_sender: &watch::Sender<Option<proto::AudioLevel>>,
+    voice_sender: &watch::Sender<Option<proto::VoiceStatus>>,
+) -> io::Result<()> {
     let mut pipe = ClientOptions::new().open(PIPE_NAME)?;
     let info = tokio::time::timeout(PROBE_TIMEOUT, request_service_info(&mut pipe))
         .await
@@ -202,17 +330,63 @@ async fn connect_and_monitor(state: &watch::Sender<ConnectionState>) -> io::Resu
     log::info!(target: "axonkey::service_rpc", "Connected to {} {}", info.name, info.version);
     state.send_replace(ConnectionState::Connected(info));
 
-    // No subscriptions or other calls are issued yet. Reading also detects a
-    // closed pipe while the desktop is otherwise idle.
-    let frame = read_frame(&mut pipe).await?;
-    let response = proto::Response::decode(frame.as_slice()).map_err(invalid_data)?;
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!(
-            "unexpected unsolicited RPC response: {}",
-            response.request_id
+    let subscription: proto::OperationResult = tokio::time::timeout(
+        PROBE_TIMEOUT,
+        call(
+            &mut pipe,
+            next_request_id(),
+            "Subscribe",
+            &proto::SubscribeRequest {
+                keyboard: false,
+                audio_level: true,
+                voice_status: true,
+            },
         ),
-    ))
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Subscribe timed out"))??;
+    if !subscription.success {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            if subscription.error.is_empty() {
+                "AxonkeyService rejected event subscription"
+            } else {
+                subscription.error.as_str()
+            },
+        ));
+    }
+
+    loop {
+        let frame = read_frame(&mut pipe).await?;
+        let event = proto::Event::decode(frame.as_slice()).map_err(invalid_data)?;
+        handle_event(event, audio_sender, voice_sender)?;
+    }
+}
+
+fn handle_event(
+    event: proto::Event,
+    audio_sender: &watch::Sender<Option<proto::AudioLevel>>,
+    voice_sender: &watch::Sender<Option<proto::VoiceStatus>>,
+) -> io::Result<()> {
+    match event.r#type.as_str() {
+        "audio_level" => {
+            let level =
+                proto::AudioLevel::decode(event.payload.as_slice()).map_err(invalid_data)?;
+            audio_sender.send_replace(Some(level));
+        }
+        "voice_status" => {
+            let status =
+                proto::VoiceStatus::decode(event.payload.as_slice()).map_err(invalid_data)?;
+            if !status.active {
+                audio_sender.send_replace(None);
+            }
+            voice_sender.send_replace(Some(status));
+        }
+        _ => {
+            log::debug!(target: "axonkey::service_rpc", "Ignoring AxonkeyService event {}", event.r#type)
+        }
+    }
+    Ok(())
 }
 
 async fn request_service_info<S>(pipe: &mut S) -> io::Result<proto::ServiceInfo>
@@ -475,6 +649,78 @@ mod tests {
             assert!(!status.enabled);
             server_task.await.unwrap();
         });
+    }
+
+    #[test]
+    fn subscribed_events_update_global_snapshots() {
+        let (audio_sender, audio_level) = watch::channel(None);
+        let (voice_sender, voice_status) = watch::channel(None);
+        handle_event(
+            proto::Event {
+                r#type: "audio_level".into(),
+                payload: proto::AudioLevel {
+                    peak: 0.25,
+                    rms: 0.1,
+                    timestamp_ms: 42,
+                }
+                .encode_to_vec(),
+            },
+            &audio_sender,
+            &voice_sender,
+        )
+        .unwrap();
+        assert_eq!(
+            audio_level
+                .borrow()
+                .as_ref()
+                .map(|value| value.timestamp_ms),
+            Some(42)
+        );
+        assert_eq!(
+            audio_level.borrow().as_ref().map(|value| value.peak),
+            Some(0.25)
+        );
+
+        handle_event(
+            proto::Event {
+                r#type: "voice_status".into(),
+                payload: proto::VoiceStatus {
+                    state: "connected".into(),
+                    connected: true,
+                    active: true,
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            },
+            &audio_sender,
+            &voice_sender,
+        )
+        .unwrap();
+        assert!(voice_status
+            .borrow()
+            .as_ref()
+            .is_some_and(|value| value.active));
+
+        handle_event(
+            proto::Event {
+                r#type: "voice_status".into(),
+                payload: proto::VoiceStatus {
+                    state: "connected".into(),
+                    connected: true,
+                    active: false,
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            },
+            &audio_sender,
+            &voice_sender,
+        )
+        .unwrap();
+        assert!(audio_level.borrow().is_none());
+        assert!(voice_status
+            .borrow()
+            .as_ref()
+            .is_some_and(|value| !value.active));
     }
 
     #[test]

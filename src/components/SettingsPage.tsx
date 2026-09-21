@@ -63,7 +63,7 @@ export function SettingsPage({ section, onSectionChange, platform, nativeRuntime
   const audioStatus = !nativeRuntime ? '未检测' : audioDriver.action.status === 'running' ? '等待授权…' : ({ unknown: '未检测', checking: '检测中', missing: '未安装', installed: '已安装', restartRequired: '需要重启', error: '操作失败' })[audioDriver.status]
   const audioError = audioDriver.action.error ?? (audioDriver.status === 'error' ? audioDriver.message : undefined)
   const deviceBusy = device.status === 'checking' || device.status === 'connecting'
-  const deviceStatus = !nativeRuntime ? '未检测' : ({ unknown: '未检测', checking: '检测中', disconnected: '未连接', connecting: '连接中', connected: '已连接', unsupported: '暂不支持', error: '检测失败' })[device.status]
+  const deviceStatus = !nativeRuntime ? '未检测' : device.status === 'error' ? device.message ?? '获取异常' : ({ unknown: '未检测', checking: '检测中', disconnected: '未连接', connecting: '连接中', connected: '已连接', unsupported: '暂不支持', error: '获取异常' })[device.status]
   const grantedCount = items.filter((item) => item.granted).length
   return <div className="settings-page settings-form-page">
     <div className="settings-layout">
@@ -128,9 +128,9 @@ export function SettingsPage({ section, onSectionChange, platform, nativeRuntime
         <div className="settings-form-control">
           <span>RC003</span>
           <span className={`settings-permission-status ${nativeRuntime && device.status === 'connected' ? 'granted' : ''}`} aria-live="polite">{deviceStatus}</span>
-          <button type="button" className="dialog-secondary" disabled={!nativeRuntime} onClick={onOpenBluetooth}><Bluetooth size={14} />打开蓝牙设置</button>
+          {platform === 'macos' && <button type="button" className="dialog-secondary" disabled={!nativeRuntime} onClick={onOpenBluetooth}><Bluetooth size={14} />打开蓝牙设置</button>}
           <button type="button" className="dialog-secondary" disabled={!nativeRuntime || deviceBusy} onClick={onCheckDevice}><RotateCcw size={14} />重新检测</button>
-          <SettingsHelp id="settings-device-help" label="连接 RC003">先在系统蓝牙设置中配对小米遥控器 RC003，再按任意按键唤醒，然后返回这里重新检测。</SettingsHelp>
+          <SettingsHelp id="settings-device-help" label="连接 RC003">{platform === 'macos' ? '先在系统蓝牙设置中配对小米遥控器 RC003，再按任意按键唤醒，然后返回这里重新检测。' : 'Windows 设备信息由 AxonkeyService 的 GetDevices 接口提供；服务未启动或获取异常时会显示对应状态。'}</SettingsHelp>
         </div>
       </section>
     </div>}

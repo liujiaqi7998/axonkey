@@ -26,6 +26,23 @@ export type WindowsServiceStatus = {
 
 export type WindowsServiceAction = 'install' | 'uninstall' | 'start' | 'stop'
 
+export type WindowsDeviceInfo = {
+  instanceId: string
+  endpointPath: string
+  driverMounted: boolean
+  inputBlocked: boolean
+  dataForwardEnabled: boolean
+  connected: boolean
+  batteryLevel: number | null
+  descriptionName: string
+}
+
+export type WindowsDevicesProbe = {
+  serviceAvailable: boolean
+  device: WindowsDeviceInfo | null
+  error: string | null
+}
+
 export const serviceStateLabels: Record<WindowsServiceState, string> = {
   notInstalled: '未安装',
   stopped: '已停止',

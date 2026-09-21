@@ -87,7 +87,7 @@ import {
   skipSetupStep,
 } from '../setupModel'
 import type { DriverActionKind, DriverKind, SetupState, SetupStepId } from '../setupModel'
-import type { WindowsServiceAction, WindowsServiceStatus } from '../windowsService'
+import type { WindowsDevicesProbe, WindowsServiceAction, WindowsServiceStatus } from '../windowsService'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { save } from '@tauri-apps/plugin-dialog'
@@ -157,10 +157,12 @@ function AppController() {
   const [draftBehavior, setDraftBehavior] = useState<DraftBehaviorState | null>(null)
   const [textInputDraft, setTextInputDraft] = useState<string | null>(null)
   const [batteryLevel, setBatteryLevel] = useState<number | null>(null)
+  const [windowsDevices, setWindowsDevices] = useState<WindowsDevicesProbe | null>(null)
   const [previewBatteryLevel, setPreviewBatteryLevel] = useState<number | null>(null)
-  const displayedBatteryLevel = debugMode ? previewBatteryLevel ?? batteryLevel : batteryLevel
+  const serviceBatteryLevel = platform === 'windows' ? windowsDevices?.device?.batteryLevel ?? null : batteryLevel
+  const displayedBatteryLevel = debugMode ? previewBatteryLevel ?? serviceBatteryLevel : serviceBatteryLevel
   const adjustPreviewBattery = (delta: number) => {
-    setPreviewBatteryLevel((current) => Math.max(0, Math.min(100, (current ?? batteryLevel ?? 50) + delta)))
+    setPreviewBatteryLevel((current) => Math.max(0, Math.min(100, (current ?? serviceBatteryLevel ?? 50) + delta)))
   }
   useEffect(() => {
     if (!debugMode) setPreviewBatteryLevel(null)
@@ -191,7 +193,6 @@ function AppController() {
   const driverProbeRunningRef = useRef(false)
   const systemProbeRunningRef = useRef(false)
   const deviceProbeRunningRef = useRef(false)
-  const batteryProbeRunningRef = useRef(false)
   const enabledRequestRunningRef = useRef(false)
   const pressedClearTimerRef = useRef<number | undefined>(undefined)
   const escapeSequenceRef = useRef({ count: 0, lastAt: 0 })
@@ -380,19 +381,15 @@ function AppController() {
   }, [])
 
   useEffect(() => {
-    if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
+    if (platform !== 'macos' || typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
     let active = true
     const refreshBattery = async () => {
-      if (batteryProbeRunningRef.current) return
-      batteryProbeRunningRef.current = true
       try {
         const level = await invoke<number | null>('probe_rc003_battery_level')
         if (active) setBatteryLevel(typeof level === 'number' && level >= 0 && level <= 100 ? Math.round(level) : null)
       } catch (error) {
         logError('Failed to read battery level', error)
         if (active) setBatteryLevel(null)
-      } finally {
-        batteryProbeRunningRef.current = false
       }
     }
     const initialTimer = window.setTimeout(refreshBattery, 10_000)
@@ -402,7 +399,7 @@ function AppController() {
       window.clearTimeout(initialTimer)
       window.clearInterval(interval)
     }
-  }, [])
+  }, [platform])
 
   useEffect(() => {
     if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
@@ -1049,7 +1046,7 @@ function AppController() {
     if (showChecking) {
       updateSetup((current) => {
         const next = setDriverStatus(current, 'input', 'checking', { message: '正在检查按键拦截驱动…' })
-        return setDeviceConnection(next, { status: 'checking', message: '正在检查 RC003…' })
+        return platform === 'windows' ? next : setDeviceConnection(next, { status: 'checking', message: '正在检查 RC003…' })
       })
     }
     try {
@@ -1074,15 +1071,17 @@ function AppController() {
               : 'macOS 已识别 RC003；启用映射后会由 Axonkey 接管。'
             : probe.device_hardware_id
               ? 'Quarbor HID 输入服务已识别并接管 RC003。'
-              : 'Windows 已检测到 RC003；按任意键唤醒后即可接管输入。',
+              : 'Windows 输入服务已识别 RC003。',
         }
         const disconnectedDevice = {
           status: 'disconnected' as const,
           name: undefined,
           hardwareId: undefined,
-          message: '未检测到 RC003，请确认蓝牙已配对并按任意键唤醒。',
+          message: probe.platform === 'macos' ? '未检测到 RC003，请确认已连接并按任意键唤醒。' : 'Windows 输入服务未识别 RC003。',
         }
-        const device = probe.rc003_connected ? connectedDevice : disconnectedDevice
+        const device = probe.platform === 'windows'
+          ? current.device
+          : probe.rc003_connected ? connectedDevice : disconnectedDevice
         const macPermissionsReady = probe.input_monitoring_granted === true && probe.accessibility_granted === true
         const inputStatus = probe.platform === 'macos'
           ? probe.input_authorization_stale
@@ -1118,7 +1117,7 @@ function AppController() {
       return true
     } catch (error) {
       logError('System probe failed', error)
-      if (showChecking) {
+      if (showChecking && platform !== 'windows') {
         updateSetup((current) => {
           const next = setDriverStatus(current, 'input', 'error', { message: `系统状态检测失败：${String(error)}` })
           return setDeviceConnection(next, { status: 'error', message: String(error) })
@@ -1180,7 +1179,7 @@ function AppController() {
     if (homeRefreshing) return
     setHomeRefreshing(true)
     try {
-      await Promise.all([probeSystemState(false), probeAudioState()])
+      await Promise.all([probeSystemState(false), probeAudioState(), platform === 'windows' ? probeDeviceConnection() : Promise.resolve()])
     } finally {
       setHomeRefreshing(false)
     }
@@ -1189,8 +1188,32 @@ function AppController() {
   const probeDeviceConnection = async () => {
     if (deviceProbeRunningRef.current || typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
     deviceProbeRunningRef.current = true
-    updateSetup((current) => setDeviceConnection(current, { status: 'checking', message: '正在后台检查 RC003…' }))
+    if (platform !== 'windows') {
+      updateSetup((current) => setDeviceConnection(current, { status: 'checking', message: '正在后台检查 RC003…' }))
+    }
     try {
+      if (platform === 'windows') {
+        const result = await invoke<WindowsDevicesProbe>('get_windows_devices')
+        setWindowsDevices(result)
+        updateSetup((current) => {
+          if (!result.serviceAvailable) {
+            return setDeviceConnection(current, { status: 'error', message: '无法访问到服务' })
+          }
+          if (result.error) {
+            return setDeviceConnection(current, { status: 'error', message: '获取异常' })
+          }
+          const device = result.device
+          return setDeviceConnection(current, device
+            ? {
+              status: device.connected ? 'connected' : 'disconnected',
+              name: device.descriptionName || '小米遥控器 RC003',
+              hardwareId: device.instanceId,
+              message: device.connected ? '已从 AxonkeyService 获取设备信息。' : '服务已访问，但设备当前未连接。',
+            }
+            : { status: 'disconnected', message: '服务已访问，未获取到设备。' })
+        })
+        return
+      }
       const connected = await invoke<boolean>('probe_rc003_connected')
       updateSetup((current) => setDeviceConnection(current, connected
         ? {
@@ -1201,11 +1224,11 @@ function AppController() {
             ? macPermissions.captureActive
               ? 'IOKit 已识别 RC003，原始按键已被拦截。'
               : 'macOS 已识别 RC003；启用映射后会由 Axonkey 接管。'
-            : current.device.hardwareId
-              ? 'Quarbor HID 输入服务已识别并接管 RC003。'
-              : 'Windows 已检测到 RC003；按任意键唤醒后即可接管输入。',
+              : current.device.hardwareId
+                ? 'Quarbor HID 输入服务已识别并接管 RC003。'
+                : 'Windows 输入服务已识别 RC003。',
         }
-        : { status: 'disconnected', message: '未检测到 RC003，请确认蓝牙已配对并按任意键唤醒。' }))
+        : { status: 'disconnected', message: '未检测到 RC003，请确认已连接并按任意键唤醒。' }))
     } catch (error) {
       logError('Device probe failed', error)
       updateSetup((current) => setDeviceConnection(current, { status: 'error', message: `设备检测失败：${String(error)}` }))
@@ -1222,7 +1245,7 @@ function AppController() {
     updateSetup((current) => setDeviceConnection(current, { status: 'checking', message: '正在检查 RC003…' }))
     window.setTimeout(() => {
       updateSetup((current) => current.device.status === 'checking'
-        ? setDeviceConnection(current, { status: 'disconnected', message: '未自动检测到 RC003，请确认蓝牙已配对并按任意键唤醒。' })
+        ? setDeviceConnection(current, { status: 'disconnected', message: '未自动检测到 RC003，请确认已连接并按任意键唤醒。' })
         : current)
     }, 900)
   }
@@ -1298,6 +1321,15 @@ function AppController() {
   useEffect(() => {
     if (setupOpen && setupState.currentStep === 'deviceConnection') void probeDeviceConnection()
   }, [setupOpen, setupState.currentStep])
+
+  useEffect(() => {
+    if (platform !== 'windows' || typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
+    void probeDeviceConnection()
+    const interval = window.setInterval(() => void probeDeviceConnection(), 5_000)
+    return () => {
+      window.clearInterval(interval)
+    }
+  }, [platform])
 
   const handleHotspotPointerDown = (button: RemoteButton, event: ReactPointerEvent<HTMLButtonElement>) => {
     if (!debugMode || !remoteArtRef.current) return
@@ -1407,7 +1439,8 @@ function AppController() {
   } : {
     title: '遥控器状态',
     rows: [
-      { label: '连接', value: setupState.device.status === 'connected' ? '已连接' : '未连接', tone: setupState.device.status === 'connected' ? 'ready' : undefined },
+      { label: '设备', value: platform === 'windows' ? windowsDevices?.device?.descriptionName || (windowsDevices?.serviceAvailable === false ? '无法访问到服务' : '未获取到设备') : '小米遥控器 RC003' },
+      { label: '连接', value: setupState.device.status === 'error' ? setupState.device.message ?? '获取异常' : setupState.device.status === 'connected' ? '已连接' : '未连接', tone: setupState.device.status === 'connected' ? 'ready' : undefined },
       { label: '电量', value: <BatteryIndicator level={displayedBatteryLevel} /> },
     ],
     action: { label: '查看状态', title: inputAuthorizationStale ? '权限失效 · 查看状态' : '查看设备状态', onClick: () => openSetupStep(inputAuthorizationStale ? 'inputDriver' : 'deviceConnection') },

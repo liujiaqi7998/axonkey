@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { audioTestMeasurementReducer, initialAudioTestMeasurement, gainAdjustedLevel, gainLevelTone, suggestedAudioGain } from '../src/audioGain.ts'
+import { audioTestMeasurementReducer, initialAudioTestMeasurement, automaticGainStep, gainAdjustedLevel, gainLevelTone, suggestedAudioGain } from '../src/audioGain.ts'
 
 test('gain estimate preserves silence and exposes clipping instead of hiding it', () => {
   assert.equal(gainAdjustedLevel(0, 30), 0)
@@ -28,6 +28,14 @@ test('feedback distinguishes silence, low volume, reference range, headroom and 
   assert.equal(gainLevelTone(0.8), 'hot')
   assert.equal(gainLevelTone(1), 'clipping')
   assert.equal(gainLevelTone(2), 'clipping')
+})
+
+test('automatic Windows gain correction is bounded and leaves the reference range stable', () => {
+  assert.equal(automaticGainStep(0, 0, -30, 30), 0)
+  assert.equal(automaticGainStep(0.01, 0, -30, 30), 3)
+  assert.equal(automaticGainStep(0.25, 0, -30, 30), 0)
+  assert.equal(automaticGainStep(0.9, 0, -30, 30), -3)
+  assert.equal(automaticGainStep(0.01, 29, -30, 30), 30)
 })
 
 

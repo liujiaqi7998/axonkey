@@ -61,8 +61,8 @@ message Device {
   bool input_blocked = 4;
   bool data_forward_enabled = 5;
   bool connected = 6;
-  // Best-effort Bluetooth metadata. Omitted/empty means Windows could not
-  // read the value during this request.
+  // Optional device metadata. Omitted/empty means the service could not read
+  // the value during this request.
   optional uint32 battery_level = 7;
   string description_name = 8;
 }

@@ -15,6 +15,13 @@ export function gainLevelTone(peak: number): 'silent' | 'low' | 'good' | 'hot' |
   return decibels < -24 ? 'low' : 'good'
 }
 
+export function automaticGainStep(peak: number, current: number, minimum: number, maximum: number, targetDb = -12) {
+  if (!Number.isFinite(peak) || peak <= 0) return current
+  const correction = Math.round(targetDb - 20 * Math.log10(peak))
+  if (Math.abs(correction) < 2) return current
+  return Math.max(minimum, Math.min(maximum, current + Math.max(-3, Math.min(3, correction))))
+}
+
 export type AudioTestMeasurement = {
   maximum: number
   completed: boolean

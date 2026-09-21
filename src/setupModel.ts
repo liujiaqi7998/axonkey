@@ -49,7 +49,7 @@ export const setupStepDefinitions: readonly SetupStepDefinition[] = [
   {
     id: 'deviceConnection',
     title: '连接遥控器',
-    description: '在系统蓝牙设置中配对并唤醒 Xiaomi RC003。',
+    description: '检查 Xiaomi RC003 的连接状态与设备信息。',
     skippable: true,
   },
   {

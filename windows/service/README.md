@@ -92,7 +92,7 @@ PCM，再写入虚拟麦克风。虚拟麦克风已被其他语音线程占用�
 `GetServiceStatus`、`SetServiceStatus`、`SetAudioGain`、`GetDevices`、`GetVoiceStatus`、`GetAudioLevel` 查询或控制服务，
 并通过 `Subscribe` 订阅 `keyboard`、`audio_level`、`voice_status` 事件。键盘报告来自
 已挂载并拦截输入的 Quarbor 端点，音频电平来自增益处理后的 PCM 样本。
-`GetDevices` 的每个 `Device` 还会尽力返回蓝牙 GATT 电量 `battery_level` 和蓝牙描述名称
+`GetDevices` 的每个 `Device` 还会尽力返回服务可读取的电量 `battery_level` 和描述名称
 `description_name`；读取失败时电量字段不设置、描述名称为空，不影响设备列表响应。
 
 每个 RPC 客户端都有独立的出站发送线程；请求响应和事件先进入有界队列，再由该线程

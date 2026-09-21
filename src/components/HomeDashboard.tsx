@@ -10,6 +10,7 @@ import {
   Github,
   Keyboard,
   RotateCcw,
+  Radio,
   Settings2,
   SlidersHorizontal,
   ShieldCheck,
@@ -132,13 +133,16 @@ export function HomeDashboard({
       ? '将 RC003 语音写入 MiRemoteV 2ch，增益仅作用于这一路音频。'
       : '将 RC003 语音写入 CABLE Input，并从 Quarbor Virtual Microphone 提供给录音应用。')
   const deviceConnected = !deviceProbeLoading && device.status === 'connected'
-  const deviceTone: HomeStatusTone = deviceProbeLoading ? 'checking' : deviceConnected ? 'ready' : 'warning'
-  const deviceStatus = deviceProbeLoading ? '检测中' : deviceConnected ? '已连接' : '未连接'
+  const deviceError = device.status === 'error'
+  const deviceTone: HomeStatusTone = deviceProbeLoading ? 'checking' : deviceError ? 'error' : deviceConnected ? 'ready' : 'warning'
+  const deviceStatus = deviceProbeLoading ? '检测中' : deviceError ? device.message ?? '获取异常' : deviceConnected ? '已连接' : '未连接'
   const deviceDetail = deviceProbeLoading
-    ? '正在检查 RC003 蓝牙连接与输入服务。'
+    ? macOS ? '正在检查 RC003 连接与输入服务。' : '正在通过 AxonkeyService 获取设备信息。'
+    : deviceError
+      ? device.message ?? '获取异常'
     : deviceConnected
       ? device.message ?? 'RC003 已被系统识别，可以接收按键。'
-      : device.message ?? '请在系统蓝牙设置中配对并唤醒 RC003。'
+      : device.message ?? (macOS ? '请在系统设置中连接并唤醒 RC003。' : '服务已访问，未获取到设备。')
   const accessibilityLoading = nativeRuntime && systemProbeLoading
   const accessibilityTone: HomeStatusTone = accessibilityLoading
     ? 'checking'
@@ -158,14 +162,14 @@ export function HomeDashboard({
   const refreshBusy = pageLoading || refreshing
   const readyCount = [inputTone, accessibilityTone, audioPresentation.tone, deviceTone]
     .filter((tone) => tone === 'ready' || tone === 'muted').length
-  const heroTone: HomeStatusTone = pageLoading ? 'checking' : allReady ? 'ready' : inputAuthorizationStale ? 'error' : 'warning'
+  const heroTone: HomeStatusTone = pageLoading ? 'checking' : allReady ? 'ready' : inputAuthorizationStale || deviceError ? 'error' : 'warning'
   const heroTitle = pageLoading
     ? '正在检查 RC003'
     : allReady
       ? 'RC003 已就绪'
       : inputAuthorizationStale
         ? '需要重新授权'
-        : deviceConnected ? '完成设置即可使用' : '等待 RC003 连接'
+        : deviceError ? '设备服务状态异常' : deviceConnected ? '完成设置即可使用' : '等待 RC003 连接'
   const heroDescription = pageLoading
     ? '正在确认权限、音频通道和设备连接。'
     : allReady
@@ -174,7 +178,7 @@ export function HomeDashboard({
         ? '当前应用身份没有有效的输入监控权限，请先完成授权。'
         : deviceConnected
           ? '设备已连接，处理剩余系统项目后即可开始使用。'
-          : '唤醒遥控器或打开连接设置，Axonkey 会自动刷新状态。'
+          : macOS ? '唤醒遥控器或打开连接设置，Axonkey 会自动刷新状态。' : '请确认 AxonkeyService 已启动，Axonkey 会自动刷新状态。'
   const recommendedStep: SetupStepId = inputTone !== 'ready' || accessibilityTone === 'warning' || audioPresentation.tone !== 'ready'
     ? 'inputDriver'
     : 'deviceConnection'
@@ -204,7 +208,7 @@ export function HomeDashboard({
 
       <div className="home-device-visual" aria-label={`小米 RC003 ${deviceStatus}`}>
         <div className="home-device-model"><span>MI</span><strong>RC003</strong></div>
-        <img src="/rc003-remote-cutout.png" alt="小米 RC003 蓝牙遥控器" />
+        <img src="/rc003-remote-cutout.png" alt="小米 RC003 遥控器" />
         <div className="home-device-telemetry">
           <span><span className={`home-status-dot ${deviceTone}`} />{deviceStatus}</span>
           <span className="home-device-divider" />
@@ -250,7 +254,7 @@ export function HomeDashboard({
             leadingAction={<button type="button" className="home-audio-test-button" onClick={onTestAudio}><SlidersHorizontal size={20} aria-hidden="true" /><span>校准音量</span></button>}
           />
           <HomeStatusRow
-            icon={<Bluetooth size={18} />}
+            icon={macOS ? <Bluetooth size={18} /> : <Radio size={18} />}
             title={macOS ? "设备连接" : "驱动状态"}
             status={deviceStatus}
             tone={deviceTone}
