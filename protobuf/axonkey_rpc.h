@@ -13,7 +13,10 @@ struct Request { std::uint64_t requestId = 0; std::string method; Bytes payload;
 struct Response { std::uint64_t requestId = 0; bool success = false; std::string error; Bytes payload; };
 struct EventEnvelope { std::string type; Bytes payload; };
 
-struct ServiceInfo { std::string name, version, protocolVersion, pipeName; };
+struct ServiceInfo {
+    std::string name, version, protocolVersion, pipeName;
+    std::int32_t audioGainDb = 0;
+};
 struct ServiceStatus { bool enabled = true; };
 struct SetServiceStatus { bool enabled = true; };
 struct SetAudioGain { std::int32_t gainDb = 0; };

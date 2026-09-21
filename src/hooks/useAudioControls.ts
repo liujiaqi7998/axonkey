@@ -16,26 +16,53 @@ type UseAudioControlsOptions = {
 }
 
 export function useAudioControls({ platform, nativeRuntime, onToast }: UseAudioControlsOptions) {
-  const [audioGain, setAudioGain] = useState(getStoredAudioGain)
+  const [audioGain, setAudioGain] = useState(() => platform === 'macos' ? getStoredAudioGain() : 0)
   const [gainError, setGainError] = useState('')
+  const [audioGainReady, setAudioGainReady] = useState(() => platform !== 'windows' || !nativeRuntime)
 
   useEffect(() => {
+    if (platform !== 'macos') return
     window.localStorage.setItem(audioSettingsStorageKey, JSON.stringify({ gain: audioGain }))
-  }, [audioGain])
+  }, [audioGain, platform])
 
   useEffect(() => {
-    if (platform === 'unsupported' || !nativeRuntime) return
-    void invoke('set_audio_gain', { gain: audioGain }).catch((error) => {
-      logError('Failed to initialize audio gain', error)
-      setGainError(`音频增益未生效：${String(error)}`)
-    })
+    if (platform === 'unsupported' || !nativeRuntime) {
+      setAudioGainReady(true)
+      return
+    }
+    let active = true
+    setGainError('')
+    if (platform === 'windows') {
+      setAudioGainReady(false)
+      void invoke<number>('get_audio_gain').then((value) => {
+        if (!active) return
+        const next = Math.max(audioGainMin, Math.min(audioGainMax, Math.round(value)))
+        setAudioGain(next)
+        setAudioGainReady(true)
+      }).catch((error) => {
+        if (!active) return
+        logError('Failed to read Windows service audio gain', error)
+        setGainError(`音频增益读取失败：${String(error)}`)
+        setAudioGainReady(false)
+      })
+    } else {
+      setAudioGainReady(true)
+      const storedGain = getStoredAudioGain()
+      setAudioGain(storedGain)
+      void invoke('set_audio_gain', { gain: storedGain }).catch((error) => {
+        if (!active) return
+        logError('Failed to initialize audio gain', error)
+        setGainError(`音频增益未生效：${String(error)}`)
+      })
+    }
+    return () => { active = false }
   }, [nativeRuntime, platform])
 
   const updateAudioGain = (value: number) => {
     const next = Math.max(audioGainMin, Math.min(audioGainMax, Math.round(value)))
     setAudioGain(next)
     setGainError('')
-    if (platform === 'unsupported' || !nativeRuntime) return
+    if (platform === 'unsupported' || !nativeRuntime || !audioGainReady) return
     logInfo(`Updating audio gain from frontend: ${next} dB`)
     void invoke('set_audio_gain', { gain: next }).catch((error) => {
       logError('Failed to update audio gain', error)
@@ -45,5 +72,5 @@ export function useAudioControls({ platform, nativeRuntime, onToast }: UseAudioC
     })
   }
 
-  return { audioGain, gainError, updateAudioGain }
+  return { audioGain, gainError, audioGainReady, updateAudioGain }
 }

@@ -8,6 +8,7 @@ type AppHeaderProps = {
   activePage: AppPage
   hasUpdate: boolean
   enabled: boolean
+  enabledPending: boolean
   onBrandClick: () => void
   onNavigate: (page: AppPage) => void
   onToggleEnabled: () => void
@@ -21,7 +22,7 @@ const pageTitles: Record<AppPage, string> = {
   about: '关于',
 }
 
-export function AppHeader({ activePage, hasUpdate, enabled, onBrandClick, onNavigate, onToggleEnabled }: AppHeaderProps) {
+export function AppHeader({ activePage, hasUpdate, enabled, enabledPending, onBrandClick, onNavigate, onToggleEnabled }: AppHeaderProps) {
   return <header className="topbar">
     <div className="topbar-left">
       <button className="brand-lockup compact brand-trigger" type="button" aria-label="Axonkey" title="Axonkey" onClick={onBrandClick}>
@@ -41,7 +42,7 @@ export function AppHeader({ activePage, hasUpdate, enabled, onBrandClick, onNavi
       <button type="button" className={`${activePage === 'about' ? 'active' : ''} ${hasUpdate ? 'has-update' : ''}`} title={hasUpdate ? '发现新版本' : undefined} aria-current={activePage === 'about' ? 'page' : undefined} onClick={() => onNavigate('about')}><Info size={15} /> 关于{hasUpdate && <span className="update-dot" role="img" aria-label="有新版本可用" />}</button>
     </nav>
     <div className="header-actions">
-      <label className="enable-control"><span>软件功能总开关</span><button className={`switch ${enabled ? 'on' : ''}`} type="button" aria-label="软件功能总开关" aria-pressed={enabled} onClick={onToggleEnabled}><span /></button></label>
+      <label className="enable-control"><span>软件功能总开关</span><button className={`switch ${enabled ? 'on' : ''}`} type="button" aria-label="软件功能总开关" aria-pressed={enabled} aria-busy={enabledPending} disabled={enabledPending} onClick={onToggleEnabled}><span /></button></label>
     </div>
   </header>
 }

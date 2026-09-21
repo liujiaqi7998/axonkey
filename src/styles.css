@@ -63,6 +63,7 @@ button { cursor: pointer; }
 .mapping-disabled-copy p { margin-top: 4px; font-size: 12px; line-height: 1.6; }
 .mapping-enable-button { flex-shrink: 0; min-height: 36px; padding: 8px 14px; border: 1px solid #956b28; border-radius: 6px; color: #fff; background: #805b20; font-size: 13px; font-weight: 700; }
 .mapping-enable-button:hover { background: #694917; }
+.mapping-enable-button:disabled { cursor: default; opacity: .65; }
 .mapping-enable-button:focus-visible { outline: 2px solid #805b20; outline-offset: 3px; }
 .mapping-active .mapping-disabled-notice { width: min(1440px, calc(100% - 48px)); }
 @media (max-width: 1000px) {
@@ -86,6 +87,7 @@ h1 { color: #202327; font-size: 28px; letter-spacing: 0; line-height: 1; }
 .switch span { display: block; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.13); transition: transform .16s ease; }
 .switch.on { background: var(--blue); }
 .switch.on span { transform: translateX(22px); }
+.switch:disabled { cursor: default; opacity: .65; }
 .device-card { width: 100%; padding: 8px 10px 7px; border: 1px solid #83b8f8; border-radius: 8px; background: #dceafe; box-shadow: 0 3px 10px rgba(56, 116, 185, .08); text-align: left; }
 .device-card:hover { border-color: #4f9df2; background: #d2e6ff; }
 .device-card-head { display: flex; align-items: center; justify-content: space-between; color: #25303b; font-size: 14px; }

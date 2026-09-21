@@ -511,7 +511,7 @@ private:
     }
     SERVICE_STATUS_HANDLE statusHandle_ = nullptr; SERVICE_STATUS status_{};
     HANDLE stopEvent_ = nullptr, notification_ = nullptr;
-    std::thread worker_; std::mutex mutex_; std::condition_variable cv_;
+    std::thread worker_; mutable std::mutex mutex_; std::condition_variable cv_;
     std::mutex operationMutex_;
     std::atomic_bool enabled_{true};
     std::vector<std::shared_ptr<Endpoint>> active_;
@@ -527,7 +527,8 @@ private:
         return result;
     }
     axonkey::rpc::ServiceInfo ServiceInfo() const {
-        return {"AxonkeyService", "0.3.1", "axonkey.service.v1", "\\\\.\\pipe\\AxonkeyService.v1"};
+        std::lock_guard lock(mutex_);
+        return {"AxonkeyService", "0.3.1", "axonkey.service.v1", "\\\\.\\pipe\\AxonkeyService.v1", config_.audioGainDb};
     }
     axonkey::rpc::ServiceStatus ServiceStatus() const {
         return {enabled_.load(std::memory_order_acquire)};

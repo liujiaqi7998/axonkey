@@ -135,6 +135,7 @@ function AppController() {
   const canUndoBehavior = behaviorHistory.past.length > 0
   const canRedoBehavior = behaviorHistory.future.length > 0
   const [enabled, setEnabled] = useState(() => getStoredSettings().enabled)
+  const [enabledPending, setEnabledPending] = useState(false)
   const [mouseEnabled, setMouseEnabled] = useState(() => getStoredSettings().mouseEnabled)
   const [mouseIgnoreScrollAcceleration, setMouseIgnoreScrollAcceleration] = useState(() => getStoredSettings().mouseIgnoreScrollAcceleration)
   const [mouseScrollSensitivity, setMouseScrollSensitivity] = useState(() => getStoredSettings().mouseScrollSensitivity)
@@ -191,6 +192,7 @@ function AppController() {
   const systemProbeRunningRef = useRef(false)
   const deviceProbeRunningRef = useRef(false)
   const batteryProbeRunningRef = useRef(false)
+  const enabledRequestRunningRef = useRef(false)
   const pressedClearTimerRef = useRef<number | undefined>(undefined)
   const escapeSequenceRef = useRef({ count: 0, lastAt: 0 })
   const behaviorAttentionTimerRef = useRef<number | undefined>(undefined)
@@ -222,6 +224,30 @@ function AppController() {
   const persistUiState = useCallback(() => {
     saveStoredUiState(uiStateRef.current)
   }, [])
+
+  useEffect(() => {
+    if (!nativeRuntime || platform !== 'windows') return
+    let active = true
+    enabledRequestRunningRef.current = true
+    setEnabledPending(true)
+    void invoke<boolean>('get_windows_service_rpc_status')
+      .then((serviceEnabled) => {
+        if (active) setEnabled(serviceEnabled)
+      })
+      .catch((error) => {
+        logError('Failed to read AxonkeyService feature status', error)
+        if (active) {
+          setEnabled(false)
+          setToast(`无法读取 AxonkeyService 功能状态：${String(error)}`)
+          window.setTimeout(() => setToast(''), 2600)
+        }
+      })
+      .finally(() => {
+        enabledRequestRunningRef.current = false
+        if (active) setEnabledPending(false)
+      })
+    return () => { active = false }
+  }, [nativeRuntime, platform])
 
   useEffect(() => {
     persistUiState()
@@ -270,7 +296,7 @@ function AppController() {
     window.addEventListener('keydown', handleEscapeFailsafe, true)
     return () => window.removeEventListener('keydown', handleEscapeFailsafe, true)
   }, [mouseEnabled])
-  const { audioGain, gainError, updateAudioGain } = useAudioControls({
+  const { audioGain, gainError, audioGainReady, updateAudioGain } = useAudioControls({
     platform,
     nativeRuntime,
     onToast: setToast,
@@ -442,12 +468,34 @@ function AppController() {
     window.setTimeout(() => setToast(''), 2200)
   }
 
-  const toggleEnabled = () => {
+  const toggleEnabled = async () => {
+    if (enabledPending || enabledRequestRunningRef.current) return
     if (!enabled && platform === 'macos' && (!macPermissions.inputMonitoring || !macPermissions.accessibility)) {
       updateSetup((current) => setCurrentSetupStep(current, 'inputDriver'))
       setSetupOpen(true)
     }
-    setEnabled((value) => !value)
+
+    const next = !enabled
+    if (nativeRuntime && platform === 'windows') {
+      if (enabledRequestRunningRef.current) return
+      enabledRequestRunningRef.current = true
+      setEnabledPending(true)
+      setAutoSaveState('saving')
+      try {
+        await invoke('set_windows_service_status', { enabled: next })
+        setEnabled(next)
+      } catch (error) {
+        logError('Failed to update AxonkeyService feature status', error)
+        setAutoSaveState('error')
+        setToast(`AxonkeyService 状态更新失败：${String(error)}`)
+        window.setTimeout(() => setToast(''), 2600)
+      } finally {
+        enabledRequestRunningRef.current = false
+        setEnabledPending(false)
+      }
+      return
+    }
+    setEnabled(next)
     setAutoSaveState('saving')
   }
 
@@ -1390,6 +1438,7 @@ function AppController() {
           activePage={activePage}
           hasUpdate={releaseUpdate.hasUpdate}
           enabled={enabled}
+          enabledPending={enabledPending}
           onBrandClick={handleBrandClick}
           onNavigate={setActivePage}
           onToggleEnabled={toggleEnabled}
@@ -1401,7 +1450,7 @@ function AppController() {
             <strong id="mapping-disabled-title">自定义按键功能未开启</strong>
             <p>可以继续编辑和保存配置，开启后自定义按键才会生效。也可通过右上角的全局开关开启。</p>
           </div>
-          <button type="button" className="mapping-enable-button" onClick={toggleEnabled}>立即开启</button>
+          <button type="button" className="mapping-enable-button" disabled={enabledPending} onClick={toggleEnabled}>立即开启</button>
         </section>}
 
         {activePage === 'overview' ? <MappingOverview
@@ -1588,7 +1637,7 @@ function AppController() {
         onClose={() => setTextInputDraft(null)}
         onSave={commitTextInputPreset}
       />}
-      {audioTestOpen && <AudioTestDialog platform={platform} nativeRuntime={nativeRuntime} audioGain={audioGain} gainError={gainError} onAudioGainChange={updateAudioGain} onClose={() => setAudioTestOpen(false)} />}
+      {audioTestOpen && <AudioTestDialog platform={platform} nativeRuntime={nativeRuntime} audioGain={audioGain} audioGainReady={audioGainReady} gainError={gainError} onAudioGainChange={updateAudioGain} onClose={() => setAudioTestOpen(false)} />}
       {setupOpen && <SetupDialog
         platform={platform}
         macPermissions={macPermissions}

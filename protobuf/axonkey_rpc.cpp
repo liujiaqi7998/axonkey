@@ -236,6 +236,7 @@ bool Parse(const Bytes& bytes, ServiceInfo& value) {
         BindString(m.version, value.version);
         BindString(m.protocol_version, value.protocolVersion);
         BindString(m.pipe_name, value.pipeName);
+        value.audioGainDb = m.audio_gain_db;
     });
 }
 
@@ -303,6 +304,7 @@ Bytes Serialize(const ServiceInfo& value) {
         BindStringEncode(m.version, value.version);
         BindStringEncode(m.protocol_version, value.protocolVersion);
         BindStringEncode(m.pipe_name, value.pipeName);
+        m.audio_gain_db = value.audioGainDb;
     });
 }
 

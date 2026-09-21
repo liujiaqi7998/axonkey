@@ -48,7 +48,7 @@ void TestRequestRoundTrip() {
 
 void TestServiceInfoRoundTrip() {
     axonkey::rpc::ServiceInfo in{
-        "AxonkeyService", "0.3.1", "axonkey.service.v1", "\\\\.\\pipe\\AxonkeyService.v1"};
+        "AxonkeyService", "0.3.1", "axonkey.service.v1", "\\\\.\\pipe\\AxonkeyService.v1", 2};
     const auto bytes = axonkey::rpc::Serialize(in);
     axonkey::rpc::ServiceInfo out;
     Expect(axonkey::rpc::Parse(bytes, out), "service info parse");
@@ -56,6 +56,7 @@ void TestServiceInfoRoundTrip() {
     ExpectEq(out.version, in.version, "version");
     ExpectEq(out.protocolVersion, in.protocolVersion, "protocol");
     ExpectEq(out.pipeName, in.pipeName, "pipe");
+    ExpectEq(out.audioGainDb, in.audioGainDb, "audio gain");
 }
 
 void TestServiceStatusRoundTrip() {

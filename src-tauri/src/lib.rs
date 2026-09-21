@@ -543,6 +543,61 @@ async fn get_windows_service_status(
 }
 
 #[tauri::command]
+async fn get_windows_service_rpc_status(
+    #[cfg(target_os = "windows")] rpc: tauri::State<'_, service_rpc::ServiceConnection>,
+) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        return rpc
+            .get_service_status()
+            .await
+            .map_err(|error| format!("无法读取 AxonkeyService 功能状态：{error}"));
+    }
+    #[cfg(not(target_os = "windows"))]
+    Err("服务状态仅支持 Windows。".into())
+}
+
+#[tauri::command]
+async fn set_windows_service_status(
+    enabled: bool,
+    #[cfg(target_os = "windows")] rpc: tauri::State<'_, service_rpc::ServiceConnection>,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        return rpc
+            .set_service_status(enabled)
+            .await
+            .map_err(|error| format!("无法更新 AxonkeyService 功能状态：{error}"));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = enabled;
+        Err("服务状态仅支持 Windows。".into())
+    }
+}
+
+#[tauri::command]
+async fn get_audio_gain(
+    app: tauri::AppHandle,
+) -> Result<i16, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::Manager;
+
+        return app
+            .state::<service_rpc::ServiceConnection>()
+            .get_audio_gain()
+            .await
+            .map_err(|error| format!("无法读取 AxonkeyService 音频增益：{error}"));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        Err("音频增益服务读取仅支持 Windows。".into())
+    }
+}
+
+#[tauri::command]
 async fn manage_windows_service(
     app: tauri::AppHandle,
     action: WindowsServiceAction,
@@ -1253,8 +1308,26 @@ fn get_audio_test_state(
 }
 
 #[tauri::command]
-fn set_audio_gain(gain: i16, audio_service: tauri::State<'_, AudioService>) -> Result<(), String> {
-    audio_service.set_gain_db(gain)
+async fn set_audio_gain(
+    gain: i16,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::Manager;
+
+        return app
+            .state::<service_rpc::ServiceConnection>()
+            .set_audio_gain(gain)
+            .await
+            .map_err(|error| format!("无法更新 AxonkeyService 音频增益：{error}"));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        use tauri::Manager;
+
+        app.state::<AudioService>().set_gain_db(gain)
+    }
 }
 
 #[tauri::command]
@@ -1485,6 +1558,8 @@ pub fn run() {
             launch_driver_action,
             probe_driver_installer,
             get_windows_service_status,
+            get_windows_service_rpc_status,
+            set_windows_service_status,
             manage_windows_service,
             open_windows_settings,
             open_system_settings,
@@ -1496,6 +1571,7 @@ pub fn run() {
             probe_audio_available,
             probe_audio_state,
             get_audio_test_state,
+            get_audio_gain,
             set_audio_gain,
             probe_rc003_connected,
             probe_rc003_battery_level,

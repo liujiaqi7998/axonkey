@@ -60,6 +60,91 @@ impl ServiceConnection {
     pub fn status(&self) -> ServiceRpcStatus {
         status_from_state(&self.state.borrow())
     }
+
+    pub async fn get_service_status(&self) -> io::Result<bool> {
+        let mut pipe = open_pipe().await?;
+        let status: proto::ServiceStatus = tokio::time::timeout(
+            PROBE_TIMEOUT,
+            call(
+                &mut pipe,
+                next_request_id(),
+                "GetServiceStatus",
+                &proto::ServiceStatusRequest {},
+            ),
+        )
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "GetServiceStatus timed out"))??;
+        Ok(status.enabled)
+    }
+
+    pub async fn set_service_status(&self, enabled: bool) -> io::Result<()> {
+        let mut pipe = open_pipe().await?;
+        let result: proto::OperationResult = tokio::time::timeout(
+            PROBE_TIMEOUT,
+            call(
+                &mut pipe,
+                next_request_id(),
+                "SetServiceStatus",
+                &proto::SetServiceStatusRequest { enabled },
+            ),
+        )
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SetServiceStatus timed out"))??;
+        if result.success {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                if result.error.is_empty() {
+                    "AxonkeyService rejected the status change"
+                } else {
+                    result.error.as_str()
+                },
+            ))
+        }
+    }
+
+    pub async fn get_audio_gain(&self) -> io::Result<i16> {
+        let mut pipe = open_pipe().await?;
+        let info = tokio::time::timeout(PROBE_TIMEOUT, request_service_info(&mut pipe))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "GetServiceInfo timed out"))??;
+        i16::try_from(info.audio_gain_db).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("AxonkeyService returned an invalid audio gain: {} dB", info.audio_gain_db),
+            )
+        })
+    }
+
+    pub async fn set_audio_gain(&self, gain: i16) -> io::Result<()> {
+        let mut pipe = open_pipe().await?;
+        let result: proto::OperationResult = tokio::time::timeout(
+            PROBE_TIMEOUT,
+            call(
+                &mut pipe,
+                next_request_id(),
+                "SetAudioGain",
+                &proto::SetAudioGainRequest {
+                    gain_db: i32::from(gain),
+                },
+            ),
+        )
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SetAudioGain timed out"))??;
+        if result.success {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                if result.error.is_empty() {
+                    "AxonkeyService rejected the audio gain"
+                } else {
+                    result.error.as_str()
+                },
+            ))
+        }
+    }
 }
 
 fn status_from_state(state: &ConnectionState) -> ServiceRpcStatus {
@@ -148,6 +233,15 @@ where
     Ok(info)
 }
 
+async fn open_pipe() -> io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    ClientOptions::new().open(PIPE_NAME)
+}
+
+fn next_request_id() -> u64 {
+    static NEXT_REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(2);
+    NEXT_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 // Calls are serialized on this pipe; no other reader may consume its response.
 async fn call<S, Q, R>(pipe: &mut S, request_id: u64, method: &str, payload: &Q) -> io::Result<R>
 where
@@ -225,6 +319,7 @@ mod tests {
             version: "0.3.1".into(),
             protocol_version: PROTOCOL_VERSION.into(),
             pipe_name: PIPE_NAME.into(),
+            audio_gain_db: 2,
         }
     }
 
@@ -255,10 +350,9 @@ mod tests {
                 .await
                 .unwrap();
             });
-            assert_eq!(
-                request_service_info(&mut client).await.unwrap().name,
-                "AxonkeyService"
-            );
+            let info = request_service_info(&mut client).await.unwrap();
+            assert_eq!(info.name, "AxonkeyService");
+            assert_eq!(info.audio_gain_db, 2);
             server_task.await.unwrap();
             assert_eq!(
                 read_frame(&mut client).await.unwrap_err().kind(),
@@ -342,6 +436,91 @@ mod tests {
         assert_eq!(value["connected"], false);
         assert!(value["info"].is_null());
         assert_eq!(value["error"], "pipe closed");
+    }
+
+    #[test]
+    fn service_status_request_round_trip() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (mut client, mut server) = duplex(256);
+            let server_task = tokio::spawn(async move {
+                let request =
+                    proto::Request::decode(read_frame(&mut server).await.unwrap().as_slice())
+                        .unwrap();
+                assert_eq!(request.method, "GetServiceStatus");
+                assert!(request.payload.is_empty());
+                write_frame(
+                    &mut server,
+                    &proto::Response {
+                        request_id: request.request_id,
+                        success: true,
+                        error: String::new(),
+                        payload: proto::ServiceStatus { enabled: false }.encode_to_vec(),
+                    },
+                )
+                .await
+                .unwrap();
+            });
+            let status: proto::ServiceStatus = call(
+                &mut client,
+                23,
+                "GetServiceStatus",
+                &proto::ServiceStatusRequest {},
+            )
+            .await
+            .unwrap();
+            assert!(!status.enabled);
+            server_task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn service_status_write_preserves_service_error() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (mut client, mut server) = duplex(256);
+            let server_task = tokio::spawn(async move {
+                let request =
+                    proto::Request::decode(read_frame(&mut server).await.unwrap().as_slice())
+                        .unwrap();
+                assert_eq!(request.method, "SetServiceStatus");
+                let payload =
+                    proto::SetServiceStatusRequest::decode(request.payload.as_slice()).unwrap();
+                assert!(payload.enabled);
+                write_frame(
+                    &mut server,
+                    &proto::Response {
+                        request_id: request.request_id,
+                        success: true,
+                        error: String::new(),
+                        payload: proto::OperationResult {
+                            success: false,
+                            error: "service rejected request".into(),
+                        }
+                        .encode_to_vec(),
+                    },
+                )
+                .await
+                .unwrap();
+            });
+            let result: proto::OperationResult = call(
+                &mut client,
+                24,
+                "SetServiceStatus",
+                &proto::SetServiceStatusRequest { enabled: true },
+            )
+            .await
+            .unwrap();
+            assert!(!result.success);
+            assert_eq!(result.error, "service rejected request");
+            server_task.await.unwrap();
+        });
     }
 
     #[test]

@@ -49,6 +49,7 @@ typedef struct _axonkey_service_v1_ServiceInfo {
     pb_callback_t version;
     pb_callback_t protocol_version;
     pb_callback_t pipe_name;
+    int32_t audio_gain_db;
 } axonkey_service_v1_ServiceInfo;
 
 typedef struct _axonkey_service_v1_ServiceStatus {
@@ -79,6 +80,8 @@ typedef struct _axonkey_service_v1_Device {
     bool input_blocked;
     bool data_forward_enabled;
     bool connected;
+    /* Best-effort Bluetooth metadata. Omitted/empty means Windows could not
+ read the value during this request. */
     bool has_battery_level;
     uint32_t battery_level;
     pb_callback_t description_name;
@@ -133,7 +136,7 @@ extern "C" {
 #define axonkey_service_v1_DeviceListRequest_init_default {0}
 #define axonkey_service_v1_VoiceStatusRequest_init_default {0}
 #define axonkey_service_v1_AudioLevelRequest_init_default {0}
-#define axonkey_service_v1_ServiceInfo_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define axonkey_service_v1_ServiceInfo_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0}
 #define axonkey_service_v1_ServiceStatus_init_default {0}
 #define axonkey_service_v1_SetServiceStatusRequest_init_default {0}
 #define axonkey_service_v1_SetAudioGainRequest_init_default {0}
@@ -152,7 +155,7 @@ extern "C" {
 #define axonkey_service_v1_DeviceListRequest_init_zero {0}
 #define axonkey_service_v1_VoiceStatusRequest_init_zero {0}
 #define axonkey_service_v1_AudioLevelRequest_init_zero {0}
-#define axonkey_service_v1_ServiceInfo_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define axonkey_service_v1_ServiceInfo_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0}
 #define axonkey_service_v1_ServiceStatus_init_zero {0}
 #define axonkey_service_v1_SetServiceStatusRequest_init_zero {0}
 #define axonkey_service_v1_SetAudioGainRequest_init_zero {0}
@@ -177,6 +180,7 @@ extern "C" {
 #define axonkey_service_v1_ServiceInfo_version_tag 2
 #define axonkey_service_v1_ServiceInfo_protocol_version_tag 3
 #define axonkey_service_v1_ServiceInfo_pipe_name_tag 4
+#define axonkey_service_v1_ServiceInfo_audio_gain_db_tag 5
 #define axonkey_service_v1_ServiceStatus_enabled_tag 1
 #define axonkey_service_v1_SetServiceStatusRequest_enabled_tag 1
 #define axonkey_service_v1_SetAudioGainRequest_gain_db_tag 1
@@ -255,7 +259,8 @@ X(a, CALLBACK, SINGULAR, BYTES,    payload,           4)
 X(a, CALLBACK, SINGULAR, STRING,   name,              1) \
 X(a, CALLBACK, SINGULAR, STRING,   version,           2) \
 X(a, CALLBACK, SINGULAR, STRING,   protocol_version,   3) \
-X(a, CALLBACK, SINGULAR, STRING,   pipe_name,         4)
+X(a, CALLBACK, SINGULAR, STRING,   pipe_name,         4) \
+X(a, STATIC,   SINGULAR, INT32,    audio_gain_db,     5)
 #define axonkey_service_v1_ServiceInfo_CALLBACK pb_default_field_callback
 #define axonkey_service_v1_ServiceInfo_DEFAULT NULL
 

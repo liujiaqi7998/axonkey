@@ -44,6 +44,7 @@ message ServiceInfo {
   string version = 2;
   string protocol_version = 3;
   string pipe_name = 4;
+  int32 audio_gain_db = 5;
 }
 
 message ServiceStatus { bool enabled = 1; }
