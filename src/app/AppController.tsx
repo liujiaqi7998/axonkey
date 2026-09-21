@@ -87,6 +87,7 @@ import {
   skipSetupStep,
 } from '../setupModel'
 import type { DriverActionKind, DriverKind, SetupState, SetupStepId } from '../setupModel'
+import type { WindowsServiceAction, WindowsServiceStatus } from '../windowsService'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { save } from '@tauri-apps/plugin-dialog'
@@ -766,6 +767,16 @@ function AppController() {
   const skipCurrentSetupStep = () => {
     updateSetup((current) => skipSetupStep(current, current.currentStep))
   }
+
+  const queryWindowsService = useCallback(async () => {
+    if (!nativeRuntime || platform !== 'windows') throw new Error('请在 Windows 桌面版中查看服务状态。')
+    return invoke<WindowsServiceStatus>('get_windows_service_status')
+  }, [nativeRuntime, platform])
+
+  const manageWindowsService = useCallback(async (action: WindowsServiceAction) => {
+    if (!nativeRuntime || platform !== 'windows') throw new Error('服务管理仅支持 Windows 桌面版。')
+    return invoke<WindowsServiceStatus>('manage_windows_service', { action })
+  }, [nativeRuntime, platform])
 
   const installerComponentState = (report: DriverInstallerReport, kind: 'input' | 'audio') => {
     const component = kind === 'input' ? report.status?.hid : report.status?.microphone
@@ -1592,6 +1603,9 @@ function AppController() {
         onDriverInstallerAction={(action) => void runDriverAction('input', action)}
         onCheckDrivers={() => void probeDriverInstaller()}
         onSkipDriverAction={(driver, action) => updateSetup((current) => skipDriverAction(current, driver, action))}
+        nativeRuntime={nativeRuntime}
+        onQueryService={queryWindowsService}
+        onServiceAction={manageWindowsService}
         onProbeAudio={() => void probeAudioState()}
         onOpenSystemSettings={(page) => void openSystemSettings(page)}
         onRequestMacPermission={(kind) => void requestMacPermission(kind)}

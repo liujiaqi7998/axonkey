@@ -355,6 +355,8 @@ h1 { color: #202327; font-size: 28px; letter-spacing: 0; line-height: 1; }
 .setup-skip-all { margin-top: auto; padding: 9px; border: 0; color: #8a9096; background: transparent; font-size: 13px; }
 .setup-skip-all:hover { color: #555e66; }
 .setup-content { position: relative; min-width: 0; padding: 40px 44px 32px; }
+.setup-dialog:has(.drivers-setup-screen) { grid-template-rows: minmax(0, 1fr); max-height: calc(100dvh - 48px); min-height: 0; }
+.setup-content:has(.drivers-setup-screen) { min-height: 0; overflow-y: auto; }
 .setup-close { position: absolute; top: 15px; right: 15px; }
 .setup-screen { display: flex; min-height: 490px; flex-direction: column; align-items: flex-start; }
 .setup-hero-icon { display: grid; place-items: center; width: 48px; height: 48px; margin-bottom: 17px; border-radius: 10px; color: var(--blue); background: #dceafa; }
@@ -400,6 +402,25 @@ h1 { color: #202327; font-size: 28px; letter-spacing: 0; line-height: 1; }
 .driver-restart-notice > div { display: flex; flex-direction: column; gap: 2px; }
 .driver-restart-notice strong { color: #44505a; font-size: 13px; }
 .driver-restart-notice span { font-size: 12px; line-height: 1.4; }
+.setup-service-panel { width: 100%; margin-top: 12px; padding: 11px 12px; border: 1px solid #d7dce0; border-radius: 8px; background: #f7f8f9; }
+.setup-service-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.setup-service-title { display: flex; min-width: 0; align-items: center; gap: 7px; }
+.setup-service-title h3 { color: #343b41; font-size: 14px; }
+.setup-service-title .settings-help { flex: 0 0 auto; }
+.setup-service-refresh { display: inline-flex; width: 27px; height: 27px; align-items: center; justify-content: center; padding: 0; border: 1px solid #d0d5da; border-radius: 50%; color: #6b7782; background: #fff; }
+.setup-service-refresh:hover:not(:disabled) { border-color: #9ebfdf; color: #3375ac; background: #f2f8ff; }
+.setup-service-refresh:disabled { cursor: default; opacity: .45; }
+.setup-service-status { display: flex; align-items: center; gap: 10px; margin-top: 9px; color: #69737c; font-size: 12px; }
+.setup-service-badge { display: inline-flex; align-items: center; gap: 7px; min-height: 25px; padding: 0 9px; border: 1px solid #d5d9dc; border-radius: 7px; color: #657079; background: #fff; }
+.setup-service-badge i { width: 8px; height: 8px; border-radius: 50%; background: #929aa1; }
+.setup-service-badge.running i { background: #3da052; box-shadow: 0 0 0 3px #d8efdd; }
+.setup-service-badge.stopped i { background: #c48734; box-shadow: 0 0 0 3px #f4e4cf; }
+.setup-service-badge.notInstalled i { background: #929aa1; }
+.setup-service-badge.startPending i, .setup-service-badge.stopPending i, .setup-service-badge.deletePending i { background: #3d7db4; }
+.setup-service-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.setup-service-actions .dialog-secondary { height: 29px; padding: 0 9px; font-size: 12px; }
+.setup-service-feedback { min-height: 17px; margin: 8px 0 0; color: #69737c; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.setup-service-feedback.error { color: #b34343; }
 .setup-inline-actions { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; margin-top: 18px; }
 .dialog-secondary.danger { color: #b34b4b; }
 .dialog-secondary.danger:hover { border-color: #d9a7a7; color: #a52e2e; background: #fff7f7; }

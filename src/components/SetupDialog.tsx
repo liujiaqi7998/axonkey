@@ -19,6 +19,9 @@ import {
 import type { DriverActionKind, DriverKind, SetupState, SetupStepId } from '../setupModel'
 import { isSetupComplete } from '../setupModel'
 import type { MacPermissionKind, MacPermissions, Platform } from '../appTypes'
+import { WindowsServiceControl } from './WindowsServiceControl'
+import type { WindowsServiceAction, WindowsServiceStatus } from '../windowsService'
+import { useState } from 'react'
 
 type SetupDialogProps = {
   platform: Platform
@@ -34,6 +37,9 @@ type SetupDialogProps = {
   onDriverInstallerAction: (action: DriverActionKind) => void
   onCheckDrivers: () => void
   onSkipDriverAction: (driver: DriverKind, action: DriverActionKind) => void
+  nativeRuntime: boolean
+  onQueryService: () => Promise<WindowsServiceStatus>
+  onServiceAction: (action: WindowsServiceAction) => Promise<WindowsServiceStatus>
   onProbeAudio: () => void
   onOpenSystemSettings: (page: 'bluetooth' | 'sound' | MacPermissionKind) => void
   onRequestMacPermission: (kind: MacPermissionKind) => void
@@ -57,7 +63,7 @@ const macSetupStepLabels: Record<SetupStepId, string> = {
 const windowsSetupSteps: SetupStepId[] = ['welcome', 'inputDriver', 'deviceConnection', 'complete']
 const macSetupSteps: SetupStepId[] = ['inputDriver', 'deviceConnection']
 
-export function SetupDialog({ platform, macPermissions, state, onClose, onOpenStep, onCompleteStep, onSkipStep, onSkipAll, onReset, onDriverAction, onDriverInstallerAction, onCheckDrivers, onSkipDriverAction, onProbeAudio, onOpenSystemSettings, onRequestMacPermission, onCheckDevice, onMarkDeviceConnected, onFinish }: SetupDialogProps) {
+export function SetupDialog({ platform, macPermissions, state, onClose, onOpenStep, onCompleteStep, onSkipStep, onSkipAll, onReset, onDriverAction, onDriverInstallerAction, onCheckDrivers, onSkipDriverAction, nativeRuntime, onQueryService, onServiceAction, onProbeAudio, onOpenSystemSettings, onRequestMacPermission, onCheckDevice, onMarkDeviceConnected, onFinish }: SetupDialogProps) {
   const step = state.currentStep
   const setupStepLabels = platform === 'macos' ? macSetupStepLabels : windowsSetupStepLabels
   const visibleSteps = platform === 'macos' ? macSetupSteps : windowsSetupSteps
@@ -116,6 +122,9 @@ export function SetupDialog({ platform, macPermissions, state, onClose, onOpenSt
             onInstallerAction={onDriverInstallerAction}
             onCheckDrivers={onCheckDrivers}
             onSkipAction={onSkipDriverAction}
+            nativeRuntime={nativeRuntime}
+            onQueryService={onQueryService}
+            onServiceAction={onServiceAction}
             onContinue={onCompleteStep}
             onSkip={onSkipStep}
           />)}
@@ -290,6 +299,9 @@ type DriversSetupScreenProps = {
   onInstallerAction: (action: DriverActionKind) => void
   onCheckDrivers: () => void
   onSkipAction: (driver: DriverKind, action: DriverActionKind) => void
+  nativeRuntime: boolean
+  onQueryService: () => Promise<WindowsServiceStatus>
+  onServiceAction: (action: WindowsServiceAction) => Promise<WindowsServiceStatus>
   onContinue: () => void
   onSkip: () => void
 }
@@ -304,7 +316,8 @@ function isDriverInstalled(state: SetupState, kind: DriverKind) {
   return status === 'installed' || status === 'restartRequired'
 }
 
-function DriversSetupScreen({ state, onInstallerAction, onCheckDrivers, onSkipAction, onContinue, onSkip }: DriversSetupScreenProps) {
+function DriversSetupScreen({ state, onInstallerAction, onCheckDrivers, onSkipAction, nativeRuntime, onQueryService, onServiceAction, onContinue, onSkip }: DriversSetupScreenProps) {
+  const [serviceBusy, setServiceBusy] = useState(false)
   const anyRunning = (['input', 'audio'] as const).some((kind) => state.drivers[kind].action.status === 'running' || state.drivers[kind].status === 'checking')
   const allInstalled = (['input', 'audio'] as const).every((kind) => isDriverInstalled(state, kind))
   const restartRequired = (['input', 'audio'] as const).some((kind) => state.drivers[kind].restartRequired)
@@ -336,7 +349,8 @@ function DriversSetupScreen({ state, onInstallerAction, onCheckDrivers, onSkipAc
         <button type="button" className="dialog-secondary" disabled={anyRunning} onClick={onCheckDrivers}><RotateCcw size={14} /> {anyRunning ? '安装器运行中' : '重新检测'}</button>
       </div>
     </section>
+    <WindowsServiceControl nativeRuntime={nativeRuntime} disabled={anyRunning} onBusyChange={setServiceBusy} onQuery={onQueryService} onAction={onServiceAction} />
     <div className="driver-restart-notice"><RotateCcw size={16} /><div><strong>安装器会统一处理重启要求</strong><span>如果状态显示“等待重启”，请重启 Windows 后再重新检测。</span></div></div>
-    <div className="setup-actions"><button type="button" className="setup-text-button" disabled={anyRunning} onClick={skipDrivers}>稍后安装</button><button type="button" className="button primary setup-primary" disabled={anyRunning} onClick={onContinue}>{allInstalled ? restartRequired ? '继续，稍后重启' : '继续' : '稍后处理并继续'} <ChevronRight size={15} /></button></div>
+    <div className="setup-actions"><button type="button" className="setup-text-button" disabled={anyRunning || serviceBusy} onClick={skipDrivers}>稍后安装</button><button type="button" className="button primary setup-primary" disabled={anyRunning || serviceBusy} onClick={onContinue}>{allInstalled ? restartRequired ? '继续，稍后重启' : '继续' : '稍后处理并继续'} <ChevronRight size={15} /></button></div>
   </div>
 }
