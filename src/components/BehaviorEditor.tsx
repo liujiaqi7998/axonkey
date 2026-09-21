@@ -73,7 +73,7 @@ export function BehaviorEditor({ editorRef, attention, platform, button, trigger
   return <section ref={editorRef} className={`behavior-editor ${attention ? 'attention' : ''}`} aria-label={`${button.label}${mappingTriggerLabel(button, trigger)}行为配置`}>
     {button.id === 'voice' && <details className="voice-button-guidance">
       <summary>
-        <span>语音键不建议配置双击/长按事件。切换语音输入法麦克风为 <strong>{platform === 'windows' ? 'CABLE Output' : 'MiRemoteV 2ch'}</strong></span>
+        <span>语音键不建议配置双击/长按事件。切换语音输入法麦克风为 <strong>{platform === 'windows' ? 'Quarbor Virtual Microphone' : 'MiRemoteV 2ch'}</strong></span>
         <ChevronDown size={16} aria-hidden="true" />
       </summary>
       <div className="voice-button-guidance-content">
@@ -85,7 +85,7 @@ export function BehaviorEditor({ editorRef, attention, platform, button, trigger
       </div>
       <div>
         <strong>切换语音输入法的麦克风</strong>
-        <p>请在语音输入法中将麦克风设为 <strong>{platform === 'windows' ? 'CABLE Output' : 'MiRemoteV 2ch'}</strong>，以接收遥控器语音。</p>
+        <p>请在语音输入法中将麦克风设为 <strong>{platform === 'windows' ? 'Quarbor Virtual Microphone' : 'MiRemoteV 2ch'}</strong>，以接收遥控器语音。</p>
         <p>豆包输入法：设置 → 语音输入 → 麦克风选择。</p>
       </div>
       </div>

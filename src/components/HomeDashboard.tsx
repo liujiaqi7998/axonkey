@@ -130,7 +130,7 @@ export function HomeDashboard({
     ? `正在检查 ${macOS ? 'MiRemoteV 2ch 与 RC003 语音通道' : 'VB-CABLE 虚拟麦克风'}。`
     : audioDriver.message ?? (macOS
       ? '将 RC003 语音写入 MiRemoteV 2ch，增益仅作用于这一路音频。'
-      : '将 RC003 语音写入 CABLE Input，并从 CABLE Output 提供给录音应用。')
+      : '将 RC003 语音写入 CABLE Input，并从 Quarbor Virtual Microphone 提供给录音应用。')
   const deviceConnected = !deviceProbeLoading && device.status === 'connected'
   const deviceTone: HomeStatusTone = deviceProbeLoading ? 'checking' : deviceConnected ? 'ready' : 'warning'
   const deviceStatus = deviceProbeLoading ? '检测中' : deviceConnected ? '已连接' : '未连接'

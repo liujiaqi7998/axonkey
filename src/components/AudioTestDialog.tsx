@@ -77,7 +77,7 @@ export function AudioTestDialog({ platform, nativeRuntime, audioGain, audioGainR
           : level.peak > 0 ? '已收到音频信号，请观察说话和停顿时的电平变化。'
             : status.forwarding ? '语音通道已开启，暂未检测到声音。请靠近遥控器说话。'
               : '已连接，请按住遥控器语音键开始说话。')
-  const deviceName = platform === 'windows' ? 'CABLE Output' : 'MiRemoteV 2ch'
+  const deviceName = platform === 'windows' ? 'Quarbor Virtual Microphone' : 'MiRemoteV 2ch'
   const adjustedPeak = gainAdjustedLevel(level.peak, audioGain)
   const adjustedMaximum = gainAdjustedLevel(maximum, audioGain)
   const tone = gainLevelTone(adjustedPeak)

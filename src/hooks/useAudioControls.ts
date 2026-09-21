@@ -15,6 +15,13 @@ type UseAudioControlsOptions = {
   onToast: (message: string) => void
 }
 
+function formatWindowsGainError(error: unknown) {
+  const detail = String(error)
+  return /os error 2|系统找不到指定的文件/.test(detail)
+    ? 'AxonkeyService 未运行或 RPC 尚未就绪，请先在设置中启动 AxonkeyService。'
+    : `音频增益读取失败：${detail}`
+}
+
 export function useAudioControls({ platform, nativeRuntime, onToast }: UseAudioControlsOptions) {
   const [audioGain, setAudioGain] = useState(() => platform === 'macos' ? getStoredAudioGain() : 0)
   const [gainError, setGainError] = useState('')
@@ -31,20 +38,32 @@ export function useAudioControls({ platform, nativeRuntime, onToast }: UseAudioC
       return
     }
     let active = true
+    let retryTimer: number | undefined
     setGainError('')
     if (platform === 'windows') {
       setAudioGainReady(false)
-      void invoke<number>('get_audio_gain').then((value) => {
+      let hasLoggedFailure = false
+      const readWindowsGain = async () => {
         if (!active) return
-        const next = Math.max(audioGainMin, Math.min(audioGainMax, Math.round(value)))
-        setAudioGain(next)
-        setAudioGainReady(true)
-      }).catch((error) => {
-        if (!active) return
-        logError('Failed to read Windows service audio gain', error)
-        setGainError(`音频增益读取失败：${String(error)}`)
-        setAudioGainReady(false)
-      })
+        try {
+          const value = await invoke<number>('get_audio_gain')
+          if (!active) return
+          const next = Math.max(audioGainMin, Math.min(audioGainMax, Math.round(value)))
+          setAudioGain(next)
+          setGainError('')
+          setAudioGainReady(true)
+        } catch (error) {
+          if (!active) return
+          if (!hasLoggedFailure) {
+            logError('Failed to read Windows service audio gain', error)
+            hasLoggedFailure = true
+          }
+          setGainError(formatWindowsGainError(error))
+          setAudioGainReady(false)
+          retryTimer = window.setTimeout(() => void readWindowsGain(), 1500)
+        }
+      }
+      void readWindowsGain()
     } else {
       setAudioGainReady(true)
       const storedGain = getStoredAudioGain()
@@ -55,7 +74,10 @@ export function useAudioControls({ platform, nativeRuntime, onToast }: UseAudioC
         setGainError(`音频增益未生效：${String(error)}`)
       })
     }
-    return () => { active = false }
+    return () => {
+      active = false
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer)
+    }
   }, [nativeRuntime, platform])
 
   const updateAudioGain = (value: number) => {
