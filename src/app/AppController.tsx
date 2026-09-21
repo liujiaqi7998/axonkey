@@ -44,6 +44,7 @@ import type {
   CommonBehaviorPreset,
   DraftBehaviorState,
   DriverActionResult,
+  DriverInstallerReport,
   HitPosition,
   MacPermissionKind,
   MacPermissions,
@@ -185,6 +186,7 @@ function AppController() {
   const brandClickRef = useRef({ count: 0, lastAt: 0 })
   const saveRevisionRef = useRef(0)
   const audioProbeRunningRef = useRef(false)
+  const driverProbeRunningRef = useRef(false)
   const systemProbeRunningRef = useRef(false)
   const deviceProbeRunningRef = useRef(false)
   const batteryProbeRunningRef = useRef(false)
@@ -765,24 +767,119 @@ function AppController() {
     updateSetup((current) => skipSetupStep(current, current.currentStep))
   }
 
+  const installerComponentState = (report: DriverInstallerReport, kind: 'input' | 'audio') => {
+    const component = kind === 'input' ? report.status?.hid : report.status?.microphone
+    const rebootRequired = report.rebootRequired === true || report.status?.rebootRequired === true
+    if (!report.status || !report.status.complete || !component || component.ready === null || ![0, 3010].includes(report.exitCode)) {
+      return {
+        status: 'error' as const,
+        restartRequired: rebootRequired,
+        message: report.message || '无法读取 Quarbor 驱动状态。',
+      }
+    }
+    return {
+      status: rebootRequired
+        ? 'restartRequired' as const
+        : component.ready ? 'installed' as const : 'missing' as const,
+      restartRequired: rebootRequired,
+      message: component.ready
+        ? rebootRequired ? '驱动已安装，重启 Windows 后生效。' : '驱动已就绪。'
+        : '未检测到已就绪的驱动。',
+    }
+  }
+
+  const applyDriverInstallerReport = (state: SetupState, report: DriverInstallerReport): SetupState => {
+    const input = installerComponentState(report, 'input')
+    const audio = installerComponentState(report, 'audio')
+    let next = setDriverStatus(state, 'input', input.status, {
+      restartRequired: input.restartRequired,
+      message: input.message,
+    })
+    next = setDriverStatus(next, 'audio', audio.status, {
+      restartRequired: audio.restartRequired,
+      message: audio.message,
+    })
+    return next
+  }
+
+  const probeDriverInstaller = async () => {
+    if (driverProbeRunningRef.current || platform !== 'windows' || typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return false
+    driverProbeRunningRef.current = true
+    updateSetup((current) => {
+      const next = setDriverStatus(current, 'input', 'checking', { message: '正在检查 Quarbor HID 驱动…' })
+      return setDriverStatus(next, 'audio', 'checking', { message: '正在检查 Quarbor 虚拟声卡…' })
+    })
+    try {
+      const report = await invoke<DriverInstallerReport>('probe_driver_installer')
+      if (!report.status) throw new Error(report.message || '安装器没有返回驱动状态。')
+      updateSetup((current) => applyDriverInstallerReport(current, report))
+      return true
+    } catch (error) {
+      logError('Driver installer status probe failed', error)
+      updateSetup((current) => {
+        const next = setDriverStatus(current, 'input', 'error', { message: `驱动检测失败：${String(error)}` })
+        return setDriverStatus(next, 'audio', 'error', { message: `驱动检测失败：${String(error)}` })
+      })
+      return false
+    } finally {
+      driverProbeRunningRef.current = false
+    }
+  }
+
   const runDriverAction = async (driver: DriverKind, action: DriverActionKind) => {
+    if (platform === 'windows') {
+      if (driverProbeRunningRef.current) return
+      driverProbeRunningRef.current = true
+      updateSetup((current) => beginDriverAction(beginDriverAction(current, 'input', action), 'audio', action))
+      try {
+        logInfo(`Starting Quarbor driver suite action: ${action}`)
+        const result = await invoke<DriverActionResult>('launch_driver_action', { driver: 'input', action })
+        const report = await invoke<DriverInstallerReport>('probe_driver_installer')
+        if (!report.status) throw new Error(report.message || '安装器没有返回驱动状态。')
+        const input = installerComponentState(report, 'input')
+        const audio = installerComponentState(report, 'audio')
+        updateSetup((current) => {
+          let next = applyDriverInstallerReport(current, report)
+          next = finishDriverAction(next, 'input', action, {
+            success: true,
+            status: input.status,
+            restartRequired: input.restartRequired,
+            message: `${input.message} 日志：${result.logPath}`,
+          })
+          return finishDriverAction(next, 'audio', action, {
+            success: true,
+            status: audio.status,
+            restartRequired: audio.restartRequired,
+            message: `${audio.message} 日志：${result.logPath}`,
+          })
+        })
+        logInfo(`Quarbor driver suite action completed: ${action}`)
+      } catch (error) {
+        logError(`Quarbor driver suite action failed: ${action}`, error)
+        const browserPreview = typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)
+        updateSetup((current) => {
+          const result = { success: false, status: 'error' as const, error: browserPreview ? '浏览器预览不会启动驱动安装器，请在 Tauri 桌面版中操作。' : String(error) }
+          let next = finishDriverAction(current, 'input', action, result)
+          return finishDriverAction(next, 'audio', action, result)
+        })
+      } finally {
+        driverProbeRunningRef.current = false
+      }
+      return
+    }
+
     updateSetup((current) => beginDriverAction(current, driver, action))
     try {
       logInfo(`Starting driver action: ${driver}/${action}`)
       const result = await invoke<DriverActionResult>('launch_driver_action', { driver, action })
-      const driverName = driver === 'audio'
-        ? platform === 'macos' ? 'MiRemoteV 2ch' : 'VB-CABLE'
-        : '按键驱动'
-      const restartRequired = platform === 'windows'
+      const driverName = 'MiRemoteV 2ch'
       updateSetup((current) => finishDriverAction(current, driver, action, {
         success: true,
-        status: action === 'install' ? restartRequired ? 'restartRequired' : 'installed' : 'missing',
-        restartRequired,
-        message: platform === 'macos'
-          ? `${driverName}${action === 'install' ? '安装' : '卸载'}已完成，Core Audio 已刷新。日志：${result.logPath}`
-          : `${driverName}${action === 'install' ? '安装' : '卸载'}已完成，请重启 Windows。日志：${result.logPath}`,
+        status: action === 'install' ? 'installed' : 'missing',
+        restartRequired: false,
+        message: `${driverName}${action === 'install' ? '安装' : '卸载'}已完成，Core Audio 已刷新。日志：${result.logPath}`,
       }))
-      if (platform === 'macos') window.setTimeout(() => void probeAudioState(), 800)
+      window.setTimeout(() => void probeAudioState(), 800)
       logInfo(`Driver action completed: ${driver}/${action}`)
     } catch (error) {
       logError(`Driver action failed: ${driver}/${action}`, error)
@@ -875,16 +972,6 @@ function AppController() {
     window.setTimeout(() => setToast(''), 2400)
   }
 
-  const openExternalPage = async (page: 'vbcable') => {
-    try {
-      await invoke('open_external_page', { page })
-    } catch (error) {
-      logError('Failed to open the VB-Audio page', error)
-      setToast('无法打开 VB-Audio 官方页面')
-      window.setTimeout(() => setToast(''), 2200)
-    }
-  }
-
   const openLogDirectory = async () => {
     try {
       const info = await invoke<{ directory: string; currentFile: string }>('open_log_directory')
@@ -927,7 +1014,7 @@ function AppController() {
               ? 'IOKit 已识别 RC003，原始按键已被拦截。'
               : 'macOS 已识别 RC003；启用映射后会由 Axonkey 接管。'
             : probe.device_hardware_id
-              ? 'Interception 输入服务已识别并接管 RC003。'
+              ? 'Quarbor HID 输入服务已识别并接管 RC003。'
               : 'Windows 已检测到 RC003；按任意键唤醒后即可接管输入。',
         }
         const disconnectedDevice = {
@@ -946,7 +1033,7 @@ function AppController() {
             : probe.input_backend_error
               ? 'error'
               : probe.input_backend_ready ? 'installed' : 'checking'
-          : !probe.input_driver_installed ? 'missing' : probe.input_backend_error ? 'error' : 'installed'
+          : current.drivers.input.status === 'checking' ? 'checking' : current.drivers.input.status
         const inputMessage = probe.platform === 'macos'
           ? probe.input_authorization_stale
             ? '当前构建的输入监控授权已失效。请在系统设置中移除旧 Axonkey，重新添加当前 Axonkey.app 并打开开关。'
@@ -957,13 +1044,7 @@ function AppController() {
               : probe.capture_active
                 ? 'macOS 原生输入服务已接管并拦截 RC003 原始按键。'
                 : 'macOS 原生输入服务已就绪。'
-          : !probe.input_driver_installed
-            ? '未检测到 Interception 按键驱动。'
-            : probe.input_backend_error
-              ? `驱动已安装，但输入服务启动失败：${probe.input_backend_error}`
-              : probe.input_backend_ready
-                ? 'Interception 按键服务工作正常。'
-                : '已检测到 Interception 按键驱动，输入服务正在启动。'
+          : current.drivers.input.message ?? '通过 Quarbor 安装器检查 HID 拦截驱动。'
         const next = setDriverStatus(current, 'input', inputStatus, { message: inputMessage })
         if (!showChecking) {
           const unchanged = next.device.status === device.status
@@ -980,7 +1061,7 @@ function AppController() {
       logError('System probe failed', error)
       if (showChecking) {
         updateSetup((current) => {
-          const next = setDriverStatus(current, 'input', 'error', { message: `按键驱动检测失败：${String(error)}` })
+          const next = setDriverStatus(current, 'input', 'error', { message: `系统状态检测失败：${String(error)}` })
           return setDeviceConnection(next, { status: 'error', message: String(error) })
         })
       }
@@ -995,9 +1076,11 @@ function AppController() {
     if (audioProbeRunningRef.current || typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
     audioProbeRunningRef.current = true
     // Keep the last result visible during subsequent probes, including polling.
-    updateSetup((current) => current.drivers.audio.status !== 'unknown' ? current : setDriverStatus(current, 'audio', 'checking', {
-      message: platform === 'macos' ? '正在检查 MiRemoteV 2ch 与 RC003 语音通道…' : '正在检查 VB-CABLE 虚拟麦克风…',
-    }))
+    if (platform === 'macos') {
+      updateSetup((current) => current.drivers.audio.status !== 'unknown' ? current : setDriverStatus(current, 'audio', 'checking', {
+        message: '正在检查 MiRemoteV 2ch 与 RC003 语音通道…',
+      }))
+    }
     try {
       const probe = await withTimeout(
         invoke<AudioProbe>('probe_audio_state'),
@@ -1014,19 +1097,21 @@ function AppController() {
             : probe.error
               ? `${outputName} 已就绪；语音通道：${probe.error}`
               : `${outputName} 已就绪，按住语音键时会自动开始转发。`
-      updateSetup((current) => setDriverStatus(current, 'audio', probe.driverInstalled ? 'installed' : 'missing', {
-        message: probe.driverInstalled
-          ? stateMessage
-          : platform === 'macos'
-            ? '未检测到 MiRemoteV 2ch 虚拟麦克风驱动。'
-            : '未检测到 VB-CABLE 的 CABLE Input 播放端点。',
-      }))
+      if (platform === 'macos') {
+        updateSetup((current) => setDriverStatus(current, 'audio', probe.driverInstalled ? 'installed' : 'missing', {
+          message: probe.driverInstalled
+            ? stateMessage
+            : '未检测到 MiRemoteV 2ch 虚拟麦克风驱动。',
+        }))
+      }
     } catch (error) {
       logError('Audio probe failed', error)
       const detail = error instanceof Error ? error.message : String(error)
-      updateSetup((current) => setDriverStatus(current, 'audio', 'error', {
-        message: `音频检测失败：${detail}。可点击“重新检测”，不影响按键映射。`,
-      }))
+      if (platform === 'macos') {
+        updateSetup((current) => setDriverStatus(current, 'audio', 'error', {
+          message: `音频检测失败：${detail}。可点击“重新检测”，不影响按键映射。`,
+        }))
+      }
     } finally {
       audioProbeRunningRef.current = false
     }
@@ -1058,7 +1143,7 @@ function AppController() {
               ? 'IOKit 已识别 RC003，原始按键已被拦截。'
               : 'macOS 已识别 RC003；启用映射后会由 Axonkey 接管。'
             : current.device.hardwareId
-              ? 'Interception 输入服务已识别并接管 RC003。'
+              ? 'Quarbor HID 输入服务已识别并接管 RC003。'
               : 'Windows 已检测到 RC003；按任意键唤醒后即可接管输入。',
         }
         : { status: 'disconnected', message: '未检测到 RC003，请确认蓝牙已配对并按任意键唤醒。' }))
@@ -1128,9 +1213,23 @@ function AppController() {
   }, [setupOpen, setupState.currentStep, platform])
 
   useEffect(() => {
+    if (setupOpen && platform === 'windows' && setupState.currentStep === 'inputDriver') void probeDriverInstaller()
+  }, [setupOpen, setupState.currentStep, platform])
+
+  useEffect(() => {
     if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
     const initialTimer = window.setTimeout(() => void probeAudioState(), 1_500)
     const interval = window.setInterval(() => void probeAudioState(), 30_000)
+    return () => {
+      window.clearTimeout(initialTimer)
+      window.clearInterval(interval)
+    }
+  }, [platform])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window) || platform !== 'windows') return
+    const initialTimer = window.setTimeout(() => void probeDriverInstaller(), 1_500)
+    const interval = window.setInterval(() => void probeDriverInstaller(), 30_000)
     return () => {
       window.clearTimeout(initialTimer)
       window.clearInterval(interval)
@@ -1490,12 +1589,12 @@ function AppController() {
         onSkipAll={() => { setSetupState((current) => skipSetup(current)); setSetupOpen(false) }}
         onReset={() => setSetupState(resetSetup())}
         onDriverAction={(driver, action) => void runDriverAction(driver, action)}
+        onDriverInstallerAction={(action) => void runDriverAction('input', action)}
+        onCheckDrivers={() => void probeDriverInstaller()}
         onSkipDriverAction={(driver, action) => updateSetup((current) => skipDriverAction(current, driver, action))}
-        onMarkDriverInstalled={(driver) => updateSetup((current) => setDriverStatus(current, driver, 'restartRequired', { restartRequired: true, message: '已确认安装，重启 Windows 后驱动生效。' }))}
         onProbeAudio={() => void probeAudioState()}
         onOpenSystemSettings={(page) => void openSystemSettings(page)}
         onRequestMacPermission={(kind) => void requestMacPermission(kind)}
-        onOpenExternalPage={(page) => void openExternalPage(page)}
         onCheckDevice={checkDeviceConnection}
         onMarkDeviceConnected={() => updateSetup((current) => setDeviceConnection(current, { status: 'connected', name: '小米遥控器 RC003', message: '设备已由用户确认连接。' }))}
         onFinish={() => {

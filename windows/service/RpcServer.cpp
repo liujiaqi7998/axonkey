@@ -380,6 +380,17 @@ void RpcServer::ClientLoop(const std::shared_ptr<Client>& client) {
         bool subscribeVoiceStatus = false;
         if (request.method == "GetServiceInfo") {
             response.success = true; response.payload = axonkey::rpc::Serialize(handlers_.serviceInfo());
+        } else if (request.method == "GetServiceStatus") {
+            response.success = true; response.payload = axonkey::rpc::Serialize(handlers_.serviceStatus());
+        } else if (request.method == "SetServiceStatus") {
+            axonkey::rpc::SetServiceStatus status;
+            response.success = axonkey::rpc::Parse(request.payload, status);
+            if (response.success) {
+                auto result = handlers_.setServiceStatus(status.enabled);
+                response.success = result.success;
+                response.error = result.error;
+                response.payload = axonkey::rpc::Serialize(result);
+            } else response.error = "invalid SetServiceStatus protobuf payload";
         } else if (request.method == "SetAudioGain") {
             axonkey::rpc::SetAudioGain gain;
             response.success = axonkey::rpc::Parse(request.payload, gain);

@@ -20,17 +20,20 @@ pub struct AudioServiceStatus {
     pub error: Option<String>,
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const AUDIO_GAIN_MIN_DB: i16 = -30;
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const AUDIO_GAIN_MAX_DB: i16 = 30;
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn clamp_gain_db(gain: i16) -> i16 {
     gain.clamp(AUDIO_GAIN_MIN_DB, AUDIO_GAIN_MAX_DB)
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos", test))]
+#[cfg(any(target_os = "macos", test))]
 mod atvv;
 
-#[cfg(any(target_os = "windows", target_os = "macos", test))]
+#[cfg(any(target_os = "macos", test))]
 mod diagnostics;
 
 #[cfg(target_os = "macos")]

@@ -3,7 +3,7 @@
  *
  * This module deliberately contains no React or Tauri dependencies. The UI
  * can keep the returned value in state and persist it with `saveSetupState`.
- * Driver commands are described as metadata only; launching an installer is
+ * Driver installer metadata is descriptive only; launching the installer is
  * an application concern and should happen behind an explicit user action.
  */
 
@@ -140,21 +140,21 @@ export type DriverDefinition = {
 export const driverDefinitions: Record<DriverKind, DriverDefinition> = {
   input: {
     kind: 'input',
-    title: '按键拦截驱动',
-    description: 'Interception 过滤驱动，用于只拦截 RC003 的按键事件。',
+    title: 'HID 拦截驱动',
+    description: 'Quarbor HID 过滤驱动，用于只拦截 RC003 的按键事件。',
     required: true,
-    installScript: 'scripts/install-driver.ps1',
-    uninstallScript: 'scripts/uninstall-driver.ps1',
+    installScript: 'windows/driver/QuarborAxonkeyDriverInstaller.exe',
+    uninstallScript: 'windows/driver/QuarborAxonkeyDriverInstaller.exe',
     rebootAfterInstall: true,
     rebootAfterUninstall: true,
   },
   audio: {
     kind: 'audio',
-    title: 'CABLE 虚拟麦克风',
-    description: '安装 VB-Audio VB-CABLE，使 Windows 出现 CABLE Output 虚拟录音设备。',
+    title: '虚拟声卡',
+    description: 'Quarbor 虚拟声卡，用于向语音输入应用提供 RC003 音频。',
     required: false,
-    installScript: 'scripts/vbcable-driver.ps1',
-    uninstallScript: 'scripts/vbcable-driver.ps1',
+    installScript: 'windows/driver/QuarborAxonkeyDriverInstaller.exe',
+    uninstallScript: 'windows/driver/QuarborAxonkeyDriverInstaller.exe',
     rebootAfterInstall: true,
     rebootAfterUninstall: true,
   },

@@ -11,10 +11,8 @@ Windows
     -> Interception send on the same RC003 keyboard device
 
   RC003 ATVV voice service
-    -> Windows Bluetooth GATT control and audio notifications
-    -> Rust frame accumulator and 16 kHz IMA ADPCM decoder
-    -> CPAL output to CABLE Input
-    -> CABLE Output selected by the consuming application
+    -> AxonkeyService Bluetooth GATT control and audio notifications
+    -> Quarbor virtual sound card
 
 macOS
   RC003 HID interfaces
@@ -66,10 +64,10 @@ ATVV voice connection. macOS needs no input driver. Its optional virtual audio
 driver is a pinned BlackHole derivative built and packaged by Axonkey as
 `MiRemoteV2ch.driver`.
 
-`AudioService` is the application-facing audio module on both platforms. Rust
-owns frame accumulation, ADPCM decoding, gain, and audio diagnostics. On Windows,
-the service uses Windows Bluetooth GATT APIs and CPAL to forward voice to
-VB-CABLE. On macOS, the Objective-C adapter hides CoreBluetooth,
+`AudioService` is the application-facing audio module on both platforms. On
+Windows it is a compatibility surface only: the client does not initialize
+Bluetooth, CPAL, or a virtual-cable endpoint; AxonkeyService owns the voice
+connection and forwarding. On macOS, the Objective-C adapter hides CoreBluetooth,
 ATVV session control, AVAudioEngine device binding, reconnect timeouts and
 sleep-safe audio-engine lifetime. The macOS service prepares Core Audio output
 when RC003 voice capabilities are confirmed and reuses the configured engine
@@ -85,15 +83,10 @@ paused; see [measurements, limitations, and shelved experiments](RC003_AUDIO_LAT
 The experimental background queue and post-stop packet handling are not part of
 the current implementation and must not be described as confirmed fixes.
 
-The first-run guide presents Interception and VB-CABLE on one driver setup page
-so both installers can finish before the user reboots Windows once. It can
-launch the reviewed Interception installer and the official VB-Audio installer.
-The Interception scripts verify the bundled installer and runtime hashes before
-requesting elevation.
-The upstream Pack45 ZIP is bundled without modification, and Axonkey verifies
-the archive hash, extracted x64 installer hash, and Authenticode publisher
-signature before requesting elevation. Driver readiness is detected from the
-`VBAudioVACMME` Windows service rather than from unrelated sound devices.
+The first-run guide uses the Quarbor driver installer to install and validate
+the HID filter and virtual sound-card drivers before the user reboots Windows.
+The installer owns package validation and administrator elevation. The Windows
+client no longer bundles or launches a VB-CABLE installer.
 Platform resources remain split between `tauri.windows.conf.json` and
 `tauri.macos.conf.json`. macOS builds generate signed install/uninstall PKGs
 from the pinned source before Tauri embeds them; the app invokes the macOS

@@ -9,6 +9,15 @@
 #include "VoiceReceiver.h"
 #include "RpcServer.h"
 #include "ServiceLog.h"
+#include "GattAccess.h"
+
+#include <winrt/base.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Devices.Enumeration.h>
+#include <winrt/Windows.Devices.Bluetooth.h>
+#include <winrt/Windows.Devices.Bluetooth.GenericAttributeProfile.h>
+#include <winrt/Windows.Storage.Streams.h>
 
 #include <algorithm>
 #include <atomic>
@@ -22,6 +31,7 @@
 #include <vector>
 #include <functional>
 #include <cstdint>
+#include <optional>
 
 namespace {
 using axonkey_service::IsRc003;
@@ -36,6 +46,133 @@ constexpr wchar_t kServiceName[] = L"AxonkeyService";
 constexpr GUID kKeyboardInterfaceGuid =
     {0x884b96c3, 0x56ef, 0x11d1, {0xbc, 0x8c, 0x00, 0xa0, 0xc9, 0x14, 0x05, 0xdd}};
 struct EndpointInfo { std::wstring path; std::wstring instanceId; };
+
+// RC003 exposes its model identity through the voice GATT service. Starting
+// from that service also gives us a BluetoothLEDevice even when the HID node
+// has no Bluetooth address in its instance ID.
+constexpr wchar_t kVoiceServiceUuid[] = L"{AB5E0001-5A21-4F05-BC7D-AF01F617B664}";
+constexpr wchar_t kBatteryServiceUuid[] = L"{0000180F-0000-1000-8000-00805F9B34FB}";
+constexpr wchar_t kBatteryLevelUuid[] = L"{00002A19-0000-1000-8000-00805F9B34FB}";
+
+struct BluetoothDeviceMetadata {
+    std::optional<std::uint8_t> batteryLevel;
+    std::wstring descriptionName;
+};
+
+winrt::guid BluetoothGuid(const wchar_t* value) { return winrt::guid{std::wstring_view(value)}; }
+
+bool IsTargetBluetoothServiceId(const std::wstring& serviceId) {
+    std::wstring value = serviceId;
+    std::transform(value.begin(), value.end(), value.begin(), towlower);
+    return value.find(L"vid&012717_pid&32b8") != std::wstring::npos ||
+        value.find(L"vid_2717&pid_32b8") != std::wstring::npos;
+}
+
+class WinRtApartment final {
+public:
+    WinRtApartment() {
+        try {
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+            initialized_ = true;
+        } catch (const winrt::hresult_error& error) {
+            // The RPC worker normally has no apartment. If a caller already
+            // initialized one, WinRT objects can still be used on that thread.
+            if (error.code() != RPC_E_CHANGED_MODE) throw;
+        }
+    }
+    ~WinRtApartment() {
+        if (initialized_) {
+            try { winrt::uninit_apartment(); } catch (...) {}
+        }
+    }
+    WinRtApartment(const WinRtApartment&) = delete;
+    WinRtApartment& operator=(const WinRtApartment&) = delete;
+private:
+    bool initialized_ = false;
+};
+
+std::wstring BluetoothDescriptionName(
+    const winrt::Windows::Devices::Bluetooth::BluetoothLEDevice& device) {
+    try {
+        const auto name = std::wstring(device.Name());
+        if (!name.empty()) return name;
+    } catch (...) {}
+    try {
+        const auto information = device.DeviceInformation();
+        if (information) return std::wstring(information.Name());
+    } catch (...) {}
+    return {};
+}
+
+std::optional<std::uint8_t> BluetoothBatteryLevel(
+    const winrt::Windows::Devices::Bluetooth::BluetoothLEDevice& device) {
+    namespace gatt = winrt::Windows::Devices::Bluetooth::GenericAttributeProfile;
+    using winrt::Windows::Devices::Bluetooth::BluetoothCacheMode;
+    using winrt::Windows::Storage::Streams::DataReader;
+    try {
+        const auto servicesResult = device.GetGattServicesForUuidAsync(
+            BluetoothGuid(kBatteryServiceUuid), BluetoothCacheMode::Cached).get();
+        if (!servicesResult || servicesResult.Status() != gatt::GattCommunicationStatus::Success)
+            return {};
+        const auto services = servicesResult.Services();
+        if (!services) return {};
+        for (std::uint32_t index = 0; index < services.Size(); ++index) {
+            const auto service = services.GetAt(index);
+            if (!service) continue;
+            const auto characteristicResult = service.GetCharacteristicsForUuidAsync(
+                BluetoothGuid(kBatteryLevelUuid), BluetoothCacheMode::Cached).get();
+            if (!characteristicResult ||
+                    characteristicResult.Status() != gatt::GattCommunicationStatus::Success)
+                continue;
+            const auto characteristics = characteristicResult.Characteristics();
+            if (!characteristics || characteristics.Size() == 0) continue;
+            const auto characteristic = characteristics.GetAt(0);
+            if (!characteristic) continue;
+            const auto read = characteristic.ReadValueAsync(BluetoothCacheMode::Cached).get();
+            if (!read || read.Status() != gatt::GattCommunicationStatus::Success || !read.Value())
+                continue;
+            const auto reader = DataReader::FromBuffer(read.Value());
+            if (!reader || reader.UnconsumedBufferLength() == 0) continue;
+            const auto level = reader.ReadByte();
+            if (level <= 100) return level;
+        }
+    } catch (...) {}
+    return {};
+}
+
+BluetoothDeviceMetadata ReadBluetoothDeviceMetadata() {
+    BluetoothDeviceMetadata result;
+    try {
+        WinRtApartment apartment;
+        namespace gatt = winrt::Windows::Devices::Bluetooth::GenericAttributeProfile;
+        using winrt::Windows::Devices::Enumeration::DeviceInformation;
+        using winrt::Windows::Devices::Bluetooth::BluetoothLEDevice;
+        const auto selector = gatt::GattDeviceService::GetDeviceSelectorFromUuid(
+            BluetoothGuid(kVoiceServiceUuid));
+        const auto services = DeviceInformation::FindAllAsync(selector).get();
+        if (!services) return result;
+        for (std::uint32_t index = 0; index < services.Size(); ++index) {
+            const auto information = services.GetAt(index);
+            if (!information || !IsTargetBluetoothServiceId(std::wstring(information.Id()))) continue;
+            try {
+                const auto service = gatt::GattDeviceService::FromIdAsync(information.Id()).get();
+                const auto session = axonkey_service::RequireGattSession(service);
+                const auto deviceId = session.DeviceId();
+                if (!deviceId) continue;
+                const auto device = BluetoothLEDevice::FromIdAsync(deviceId.Id()).get();
+                if (!device) continue;
+                result.descriptionName = BluetoothDescriptionName(device);
+                result.batteryLevel = BluetoothBatteryLevel(device);
+                return result;
+            } catch (...) {
+                // A stale service entry should not prevent trying the next one.
+            }
+        }
+    } catch (...) {
+        // Bluetooth discovery is best effort for GetDevices.
+    }
+    return result;
+}
 
 std::vector<EndpointInfo> EnumerateEndpoints() {
     std::vector<EndpointInfo> result;
@@ -213,8 +350,11 @@ public:
             return error;
         }
         config_ = axonkey_service::LoadServiceConfig();
+        enabled_.store(config_.enabled, std::memory_order_release);
         rpc_ = std::make_unique<axonkey_service::RpcServer>(axonkey_service::RpcHandlers{
             [this] { return ServiceInfo(); },
+            [this] { return ServiceStatus(); },
+            [this](bool enabled) { return SetServiceEnabled(enabled); },
             [this](std::int32_t gain) { return SetAudioGain(gain); },
             [this] { return DeviceList(); },
             [this] { return VoiceStatus(); },
@@ -262,11 +402,12 @@ private:
         status_.dwControlsAccepted = (state == SERVICE_RUNNING) ?
             SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN : 0;
         status_.dwWaitHint = waitHint; status_.dwWin32ExitCode = NO_ERROR;
-        if (statusHandle_ && !SetServiceStatus(statusHandle_, &status_))
+        if (statusHandle_ && !::SetServiceStatus(statusHandle_, &status_))
             LogWin32Error(L"Updating service status failed", GetLastError());
     }
     void Worker() {
-        axonkey_service::LogMessage(L"Audio gain loaded: " + std::to_wstring(config_.audioGainDb) + L" dB");
+        axonkey_service::LogMessage(L"Audio gain loaded: " + std::to_wstring(config_.audioGainDb) +
+            L" dB; service enabled=" + std::to_wstring(enabled_.load() ? 1 : 0));
         while (WaitForSingleObject(stopEvent_, 0) != WAIT_OBJECT_0) {
             try { Reconcile(); }
             catch (const std::exception& error) {
@@ -276,17 +417,19 @@ private:
             std::unique_lock lock(mutex_);
             cv_.wait_for(lock, std::chrono::seconds(2));
         }
+        std::lock_guard operationLock(operationMutex_);
         StopEndpoints();
-        // All handles are closed before changing LowerFilters.
-        try {
-            for (const auto& device : quarbor::EnumerateHidKeyboards(false)) {
-                if (!device.attachmentConfigured) continue;
-                try { quarbor::SetDeviceAttachment(device.instanceId, false, true); }
-                catch (...) { LogMessage(L"Device filter detach failed; device=" + device.instanceId, LogLevel::Warning); }
-            }
-        } catch (...) { LogMessage(L"Device enumeration failed during shutdown", LogLevel::Warning); }
+        DetachDevices();
     }
     void Reconcile() {
+        std::lock_guard operationLock(operationMutex_);
+        ReconcileLocked();
+    }
+    void ReconcileLocked() {
+        // This is intentionally the first device-initialization decision. A
+        // disabled service must not enumerate, attach filters, or start voice
+        // and HID workers.
+        if (!enabled_.load(std::memory_order_acquire)) return;
         std::vector<std::wstring> targets;
         try {
             for (const auto& device : quarbor::EnumerateHidKeyboards(true)) if (IsRc003(device.instanceId)) {
@@ -355,9 +498,22 @@ private:
         voices_.clear();
         targets_.clear();
     }
+    void DetachDevices() {
+        // All endpoint and voice handles are closed before changing
+        // LowerFilters on the devices.
+        try {
+            for (const auto& device : quarbor::EnumerateHidKeyboards(false)) {
+                if (!device.attachmentConfigured) continue;
+                try { quarbor::SetDeviceAttachment(device.instanceId, false, true); }
+                catch (...) { LogMessage(L"Device filter detach failed; device=" + device.instanceId, LogLevel::Warning); }
+            }
+        } catch (...) { LogMessage(L"Device enumeration failed while detaching devices", LogLevel::Warning); }
+    }
     SERVICE_STATUS_HANDLE statusHandle_ = nullptr; SERVICE_STATUS status_{};
     HANDLE stopEvent_ = nullptr, notification_ = nullptr;
     std::thread worker_; std::mutex mutex_; std::condition_variable cv_;
+    std::mutex operationMutex_;
+    std::atomic_bool enabled_{true};
     std::vector<std::shared_ptr<Endpoint>> active_;
     std::unordered_map<std::wstring, std::shared_ptr<axonkey_service::VoiceReceiver>> voices_;
     axonkey_service::ServiceConfig config_;
@@ -373,6 +529,24 @@ private:
     axonkey::rpc::ServiceInfo ServiceInfo() const {
         return {"AxonkeyService", "0.3.1", "axonkey.service.v1", "\\\\.\\pipe\\AxonkeyService.v1"};
     }
+    axonkey::rpc::ServiceStatus ServiceStatus() const {
+        return {enabled_.load(std::memory_order_acquire)};
+    }
+    axonkey::rpc::OperationResult SetServiceEnabled(bool enabled) {
+        std::lock_guard operationLock(operationMutex_);
+        enabled_.store(enabled, std::memory_order_release);
+        if (enabled) {
+            ReconcileLocked();
+        } else {
+            StopEndpoints();
+            DetachDevices();
+        }
+        if (!axonkey_service::SaveServiceEnabled(enabled))
+            return {false, "Enabled could not be saved"};
+        cv_.notify_all();
+        LogMessage(std::wstring(L"Service device processing ") + (enabled ? L"enabled" : L"disabled"));
+        return {true, {}};
+    }
     axonkey::rpc::OperationResult SetAudioGain(std::int32_t gain) {
         gain = std::clamp(gain, axonkey_service::kMinAudioGainDb, axonkey_service::kMaxAudioGainDb);
         std::lock_guard lock(mutex_);
@@ -383,11 +557,19 @@ private:
     }
     axonkey::rpc::DeviceList DeviceList() {
         axonkey::rpc::DeviceList result;
+        bool hasTargets = false;
+        {
+            std::lock_guard lock(mutex_);
+            hasTargets = !targets_.empty();
+        }
+        const auto bluetooth = hasTargets ? ReadBluetoothDeviceMetadata() : BluetoothDeviceMetadata{};
         std::lock_guard lock(mutex_);
         for (const auto& target : targets_) {
             axonkey::rpc::Device device;
             device.instanceId = WideToUtf8(target);
             device.driverMounted = true;
+            device.batteryLevel = bluetooth.batteryLevel;
+            device.descriptionName = WideToUtf8(bluetooth.descriptionName);
             for (const auto& endpoint : active_) if (endpoint->InstanceId() == target) {
                 device.endpointPath = WideToUtf8(endpoint->Path());
                 device.connected = endpoint->Valid();

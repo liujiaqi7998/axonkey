@@ -23,12 +23,13 @@ local utility rather than a general keyboard automation platform.
   main window is closed.
 - Import and export mappings as JSON, restore defaults, and undo or redo edits.
 - Store all settings and diagnostics locally.
-- Guide Windows users through Interception and optional VB-CABLE setup, and
+- Guide Windows users through the Quarbor HID and virtual sound-card installer, and
   macOS users through Input Monitoring, Accessibility, and optional MiRemoteV
   2ch virtual-microphone setup.
-- Forward RC003 voice to VB-CABLE on Windows and MiRemoteV 2ch on macOS.
-  Voice transport and decoding run inside Axonkey.
-- Adjust voice gain from -30 dB to +30 dB and inspect live audio levels.
+- Keep Windows voice transport in AxonkeyService; the client does not connect to
+  Windows Bluetooth audio or CPAL/CABLE output. macOS forwards voice to MiRemoteV
+  2ch and exposes live audio levels.
+- Adjust macOS voice gain from -30 dB to +30 dB and inspect live audio levels.
 - Show device connection, battery, permissions, and driver status, with setup
   actions and access to local runtime logs.
 

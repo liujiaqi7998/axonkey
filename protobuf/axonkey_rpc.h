@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -13,11 +14,15 @@ struct Response { std::uint64_t requestId = 0; bool success = false; std::string
 struct EventEnvelope { std::string type; Bytes payload; };
 
 struct ServiceInfo { std::string name, version, protocolVersion, pipeName; };
+struct ServiceStatus { bool enabled = true; };
+struct SetServiceStatus { bool enabled = true; };
 struct SetAudioGain { std::int32_t gainDb = 0; };
 struct OperationResult { bool success = false; std::string error; };
 struct Device {
     std::string instanceId, endpointPath;
     bool driverMounted = false, inputBlocked = false, dataForwardEnabled = false, connected = false;
+    std::optional<std::uint8_t> batteryLevel;
+    std::string descriptionName;
 };
 struct DeviceList { std::vector<Device> devices; };
 struct VoiceStatus {
@@ -40,12 +45,16 @@ bool Parse(const Bytes& bytes, KeyboardEvent& value);
 bool Parse(const Bytes& bytes, Response& value);
 bool Parse(const Bytes& bytes, EventEnvelope& value);
 bool Parse(const Bytes& bytes, ServiceInfo& value);
+bool Parse(const Bytes& bytes, ServiceStatus& value);
+bool Parse(const Bytes& bytes, SetServiceStatus& value);
 bool Parse(const Bytes& bytes, OperationResult& value);
 
 Bytes Serialize(const Request& value);
 Bytes Serialize(const Response& value);
 Bytes Serialize(const EventEnvelope& value);
 Bytes Serialize(const ServiceInfo& value);
+Bytes Serialize(const ServiceStatus& value);
+Bytes Serialize(const SetServiceStatus& value);
 Bytes Serialize(const OperationResult& value);
 Bytes Serialize(const DeviceList& value);
 Bytes Serialize(const VoiceStatus& value);

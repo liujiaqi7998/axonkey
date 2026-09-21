@@ -10,7 +10,7 @@
 
 [**⬇ 下载 Axonkey（macOS / Windows）**](https://github.com/leowzz/axonkey/releases)
 
-Axonkey 是一款支持小米蓝牙遥控器2Pro(RC003) 和鼠标输入的本地映射控制台。macOS 版通过 IOKit 读取目标设备（`VID 0x2717` / `PID 0x32B8`）的原始 HID 报告，并用 CoreGraphics 与 AppKit 发送映射后的输入；Windows 版通过 Interception 过滤目标设备输入，并将 RC003 语音转发到 VB-CABLE。
+Axonkey 是一款支持小米蓝牙遥控器2Pro(RC003) 和鼠标输入的本地映射控制台。macOS 版通过 IOKit 读取目标设备（`VID 0x2717` / `PID 0x32B8`）的原始 HID 报告，并用 CoreGraphics 与 AppKit 发送映射后的输入；Windows 版通过 Quarbor HID 驱动过滤目标设备输入，RC003 语音由 AxonkeyService 负责。
 
 设备与触发项独立于映射行为：可以在“映射”左侧切换小米遥控器和鼠标，并分别配置快捷键控制。Axonkey 不依赖 AutoHotkey、AutoHotInterception 或 Karabiner-Elements，配置和诊断数据均保存在本机。
 
@@ -49,10 +49,10 @@ Axonkey 是一款支持小米蓝牙遥控器2Pro(RC003) 和鼠标输入的本地
 - 支持按顺序执行多个步骤，例如粘贴文本、等待和按下 Enter。
 - 内置“输入文本并回车”行为：粘贴文本 -> 等待 30 ms -> Enter。
 - 支持将完整映射导出为 JSON、重新导入或恢复默认映射。
-- Windows 和 macOS 均可调节 RC003 语音输入增益（`-30 dB` 至 `+30 dB`）；Windows 输出到 `CABLE Input`，macOS 输出到 `MiRemoteV 2ch`。
+- macOS 客户端可调节 RC003 语音输入增益（`-30 dB` 至 `+30 dB`）并输出到 `MiRemoteV 2ch`；Windows 语音通道由 AxonkeyService 管理。
 - 修改后自动保存并立即应用，无需为普通映射变更重启应用或系统。
 - 基础输入通道按 VID/PID 匹配 RC003；Windows 可选增强通道的共享宿主识别限制见下文。
-- Windows 首次引导可安装并检查 Interception 与 VB-Audio VB-CABLE；macOS 引导可完成系统权限、安装 MiRemoteV 2ch 虚拟麦克风并连接设备。
+- Windows 首次引导可通过 Quarbor 安装器安装并检查 HID 拦截驱动与虚拟声卡；macOS 引导可完成系统权限、安装 MiRemoteV 2ch 虚拟麦克风并连接设备。
 - macOS 授权时提供置顶小窗，可直接打开对应设置、在 Finder 中定位当前 `Axonkey.app` 并重新检测权限。
 - 关闭主窗口后继续常驻 Windows 系统托盘或 macOS 菜单栏，可从托盘菜单重新显示或完全退出。
 
@@ -117,14 +117,14 @@ Windows 使用独立的系统鼠标监听与 SendInput，不需要连接 RC003 �
 | 平台 | 按键输入 | 可配置按键 | RC003 语音 | 当前结论 |
 | --- | --- | ---: | --- | --- |
 | macOS 13+ | IOKit 原始 HID + CoreGraphics / AppKit | 13 | ATVV -> IMA ADPCM -> `MiRemoteV 2ch` | 支持按键映射与语音；需要输入监控与辅助功能权限 |
-| Windows 11 x64 | Interception 1.0.1 | 扫描码按键 | ATVV -> IMA ADPCM -> `CABLE Input`，应用从 `CABLE Output` 收音 | 映射需要 Interception；语音另需 VB-CABLE |
+| Windows 11 x64 | Quarbor HID 拦截驱动 | 扫描码按键 | AxonkeyService 负责 RC003 语音 | 映射和虚拟声卡由 Quarbor 驱动套件提供 |
 
 ### Windows
 
 - 64 位 Windows 11；
 - 已通过 Windows 蓝牙设置配对的 RC003；
-- Interception v1.0.1 输入驱动；
-- 需要虚拟麦克风时安装 VB-Audio VB-CABLE Pack45；
+- Quarbor HID 拦截驱动与虚拟声卡驱动；
+- AxonkeyService（负责 Windows RC003 语音通道）；
 - 首次安装或卸载上述驱动时需要管理员权限，并需要重启 Windows 一次。
 
 Axonkey 使用 x64 `interception.dll`，因此不支持 32 位 Windows。输入服务按硬件 ID 只为 RC003 设置过滤条件。
@@ -144,11 +144,11 @@ macOS 按键映射不需要安装输入驱动。未启用自定义映射，或�
 
 1. 在 Windows 蓝牙设置中配对并唤醒 RC003。
 2. 启动 Axonkey，按照首次使用引导检查设备和驱动。
-3. 在“驱动安装”页面安装 Interception；需要语音时同时安装 VB-CABLE。完成所需驱动安装后重启 Windows 一次。
+3. 在“驱动安装”页面通过 Quarbor 安装器安装并检查 HID 拦截驱动和虚拟声卡。完成安装后重启 Windows 一次。
 4. 重新打开 Axonkey，选择遥控器按键及触发方式，然后设置目标行为。
 5. 打开“启用自定义按键功能”开关。
 
-Interception 和 VB-CABLE 只需安装一次。之后添加、删除或修改映射不需要再次重启。
+Quarbor 驱动套件只需安装一次。之后添加、删除或修改映射不需要再次重启。
 
 从源码目录或解压后的发行目录也可以手动运行安装脚本：
 
@@ -158,17 +158,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-driver.ps1
 
 脚本会校验随项目提供的 Interception 安装程序和运行库，说明系统变更，要求输入 `INSTALL` 确认，然后申请管理员权限。
 
-也可以手动启动仓库中经过校验的 VB-CABLE 安装流程：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\vbcable-driver.ps1 -Action install
-```
-
-该脚本校验未修改的官方 Pack45 ZIP、x64 安装器哈希和发布者签名，随后申请管理员权限并打开 VB-Audio 官方安装窗口。安装完成后需要重启 Windows，录音设备列表中会出现 `CABLE Output (VB-Audio Virtual Cable)`。
-
-Windows 语音链路由 Axonkey 直接维护：应用通过 Bluetooth GATT 连接 RC003 的 ATVV 服务，解码 16 kHz IMA ADPCM 音频并写入 `CABLE Input` 播放端点；录音应用选择 `CABLE Output (VB-Audio Virtual Cable)` 作为麦克风。按住语音键时才会建立或恢复语音会话，主页的增益滑杆（`-30 dB` 至 `+30 dB`）只作用于这一路音频。
-
-> **Windows 音频设置提醒：** 微信输入法语音输入可能压低其他媒体音量，甚至中断播放。麦克风请选择 `CABLE Output`；系统和应用的扬声器输出请保留真实扬声器或耳机，不要选择 `CABLE Input` 等虚拟设备。Axonkey 会自行向 `CABLE Input` 写入遥控器语音，无需将其设为系统默认播放设备。
+Windows 客户端不再连接 RC003 的 Bluetooth GATT 音频服务，也不再维护 CPAL 到 CABLE 的转发链路。Windows 语音连接、解码和虚拟声卡输出由 AxonkeyService 负责。
 
 ## macOS 首次使用
 
@@ -291,7 +281,7 @@ src-tauri/target/release/bundle/dmg/Axonkey_<version>_<arch>.dmg
 
 ```text
 Windows input: RC003 -> Interception -> 扫描码 -> 行为状态机 -> 同设备发送
-Windows voice: RC003 -> Bluetooth GATT ATVV -> IMA ADPCM -> PCM -> CABLE Input -> CABLE Output
+Windows voice: AxonkeyService -> RC003 Bluetooth GATT ATVV -> Quarbor virtual sound card
 macOS input:   RC003 -> IOHIDManager -> HID usage -> 行为状态机 -> CoreGraphics / AppKit 发送
 macOS voice:   RC003 -> CoreBluetooth ATVV -> IMA ADPCM -> PCM -> MiRemoteV 2ch
 ```
@@ -306,7 +296,7 @@ Axonkey 会在本地记录启动、设备连接、输入/音频服务、系统�
 
 日志按文件大小滚动：单个文件达到 5 MB 后自动切换，并保留最近 5 个旧文件。Tauri 默认日志目录为：Windows 的 `%LOCALAPPDATA%\com.axonkey.app\logs`，macOS 的 `~/Library/Logs/com.axonkey.app`。驱动安装器仍会把单独的安装输出写入下方的 `Axonkey\logs` 目录。
 
-Windows 音频链路常驻 INFO 级诊断，不需要开启调试模式。连接时记录协商的协议、编码、帧大小和 CABLE 输出格式；语音活动期间约每秒输出一条 `RC003 audio diagnostics`，短会话会汇入下一个统计窗口，连接关闭时补记剩余统计。空闲且没有音频数据或控制事件时不刷日志，不保存音频包内容、PCM 或识别文本。
+Windows 客户端不再创建音频 worker、连接 Bluetooth GATT 或输出音频诊断；Windows 语音通道日志由 AxonkeyService 负责。
 
 - `window_ms` 为实际统计窗口长度，各计数是窗口增量，不是会话总量；跨线程计数是近似快照。`starts/stops/syncs` 统计收到的控制事件，不表示音频已经成功输出。
 - `rx_packets/rx_bytes/last_rx_ms` 表示收到的音频通知数量、字节数和距最后一包的毫秒数（`never` 表示服务启动以来尚未收包）；`rejected_packets` 是因空包、未就绪或停止保护窗口等原因未进入解码的包数，`notification_read_errors` 是读取音频或控制通知失败的次数。
@@ -347,12 +337,6 @@ Interception 存在设备断开后重新连接可能无法输入的已知问题�
 Interception 是独立的第三方组件，并采用双重许可。其上游许可允许在所列 LGPL 条款下进行非商业使用；商业分发需要向 Interception 作者取得单独授权。在取得相应许可前，请勿将包含 Interception 资源的 Axonkey 用于商业分发。
 
 具体版本、文件哈希、许可文本和上游链接见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) 与 [vendor/interception/SOURCE.md](./vendor/interception/SOURCE.md)。
-
-## VB-CABLE 许可
-
-VB-CABLE 是 VB-Audio Software 提供的 Donationware。Axonkey 原样携带官方 Pack45 ZIP，并在引导中明确展示其来源；如果你认为 VB-CABLE 有用或将其用于专业场景，请通过 [VB-Audio 官方页面](https://vb-audio.com/Cable/) 捐赠或购买许可。
-
-版本、哈希和分发说明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) 与 [vendor/vbcable/SOURCE.md](./vendor/vbcable/SOURCE.md)。
 
 ## MiRemoteV 2ch 许可
 

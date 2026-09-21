@@ -91,11 +91,14 @@ bool DecodeDevice(pb_istream_t* stream, const pb_field_t* /*field*/, void** arg)
     axonkey_service_v1_Device msg = axonkey_service_v1_Device_init_zero;
     BindString(msg.instance_id, device.instanceId);
     BindString(msg.endpoint_path, device.endpointPath);
+    BindString(msg.description_name, device.descriptionName);
     if (!pb_decode(stream, axonkey_service_v1_Device_fields, &msg)) return false;
     device.driverMounted = msg.driver_mounted;
     device.inputBlocked = msg.input_blocked;
     device.dataForwardEnabled = msg.data_forward_enabled;
     device.connected = msg.connected;
+    if (msg.has_battery_level && msg.battery_level <= 100)
+        device.batteryLevel = static_cast<std::uint8_t>(msg.battery_level);
     devices->push_back(std::move(device));
     return true;
 }
@@ -111,6 +114,11 @@ bool EncodeDevice(pb_ostream_t* stream, const pb_field_t* field, void* const* ar
         msg.input_blocked = device.inputBlocked;
         msg.data_forward_enabled = device.dataForwardEnabled;
         msg.connected = device.connected;
+        if (device.batteryLevel.has_value()) {
+            msg.has_battery_level = true;
+            msg.battery_level = *device.batteryLevel;
+        }
+        BindStringEncode(msg.description_name, device.descriptionName);
         if (!pb_encode_submessage(stream, axonkey_service_v1_Device_fields, &msg)) return false;
     }
     return true;
@@ -231,6 +239,26 @@ bool Parse(const Bytes& bytes, ServiceInfo& value) {
     });
 }
 
+bool Parse(const Bytes& bytes, ServiceStatus& value) {
+    value = {};
+    axonkey_service_v1_ServiceStatus msg = axonkey_service_v1_ServiceStatus_init_zero;
+    pb_istream_t stream = pb_istream_from_buffer(
+        bytes.empty() ? nullptr : bytes.data(), bytes.size());
+    if (!pb_decode(&stream, axonkey_service_v1_ServiceStatus_fields, &msg)) return false;
+    value.enabled = msg.enabled;
+    return true;
+}
+
+bool Parse(const Bytes& bytes, SetServiceStatus& value) {
+    value = {};
+    axonkey_service_v1_SetServiceStatusRequest msg = axonkey_service_v1_SetServiceStatusRequest_init_zero;
+    pb_istream_t stream = pb_istream_from_buffer(
+        bytes.empty() ? nullptr : bytes.data(), bytes.size());
+    if (!pb_decode(&stream, axonkey_service_v1_SetServiceStatusRequest_fields, &msg)) return false;
+    value.enabled = msg.enabled;
+    return true;
+}
+
 bool Parse(const Bytes& bytes, OperationResult& value) {
     value = {};
     axonkey_service_v1_OperationResult msg = axonkey_service_v1_OperationResult_init_zero;
@@ -276,6 +304,30 @@ Bytes Serialize(const ServiceInfo& value) {
         BindStringEncode(m.protocol_version, value.protocolVersion);
         BindStringEncode(m.pipe_name, value.pipeName);
     });
+}
+
+Bytes Serialize(const ServiceStatus& value) {
+    axonkey_service_v1_ServiceStatus msg = axonkey_service_v1_ServiceStatus_init_zero;
+    msg.enabled = value.enabled;
+    size_t size = 0;
+    if (!pb_get_encoded_size(&size, axonkey_service_v1_ServiceStatus_fields, &msg)) return {};
+    Bytes out(size);
+    pb_ostream_t stream = pb_ostream_from_buffer(out.empty() ? nullptr : out.data(), out.size());
+    if (!pb_encode(&stream, axonkey_service_v1_ServiceStatus_fields, &msg)) return {};
+    out.resize(stream.bytes_written);
+    return out;
+}
+
+Bytes Serialize(const SetServiceStatus& value) {
+    axonkey_service_v1_SetServiceStatusRequest msg = axonkey_service_v1_SetServiceStatusRequest_init_zero;
+    msg.enabled = value.enabled;
+    size_t size = 0;
+    if (!pb_get_encoded_size(&size, axonkey_service_v1_SetServiceStatusRequest_fields, &msg)) return {};
+    Bytes out(size);
+    pb_ostream_t stream = pb_ostream_from_buffer(out.empty() ? nullptr : out.data(), out.size());
+    if (!pb_encode(&stream, axonkey_service_v1_SetServiceStatusRequest_fields, &msg)) return {};
+    out.resize(stream.bytes_written);
+    return out;
 }
 
 Bytes Serialize(const OperationResult& value) {

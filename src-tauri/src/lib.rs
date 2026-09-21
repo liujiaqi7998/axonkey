@@ -315,23 +315,78 @@ fn get_platform() -> &'static str {
     return "unsupported";
 }
 
-#[cfg(target_os = "windows")]
-fn find_driver_script(
-    driver: &str,
-    action: &str,
-    resource_dir: &std::path::Path,
-) -> Result<std::path::PathBuf, String> {
-    let file_name = match (driver, action) {
-        ("input", "install") => "install-driver.ps1",
-        ("input", "uninstall") => "uninstall-driver.ps1",
-        ("audio", "install" | "uninstall") => "vbcable-driver.ps1",
-        ("input" | "audio", _) => return Err("Unsupported driver action".into()),
-        _ => return Err("Unsupported driver kind".into()),
-    };
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DriverActionResult {
+    log_path: String,
+    exit_code: i32,
+    reboot_required: Option<bool>,
+    outcome: String,
+    message: String,
+}
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriverInstallerComponentStatus {
+    packages: Option<u32>,
+    service: Option<String>,
+    enabled: Option<bool>,
+    ready: Option<bool>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriverInstallerDevice {
+    instance_id: String,
+    present: bool,
+    started: bool,
+    driver_bound: bool,
+    reboot_required: bool,
+    problem: u32,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriverInstallerStatus {
+    complete: bool,
+    reboot_required: Option<bool>,
+    hid: DriverInstallerComponentStatus,
+    microphone: DriverInstallerComponentStatus,
+    devices: Option<Vec<DriverInstallerDevice>>,
+    errors: Vec<serde_json::Value>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriverInstallerReport {
+    schema_version: u32,
+    action: String,
+    outcome: String,
+    exit_code: i32,
+    reboot_required: Option<bool>,
+    message: String,
+    status: Option<DriverInstallerStatus>,
+}
+
+#[cfg(target_os = "windows")]
+fn driver_log_path(_driver: &str, action: &str) -> Result<std::path::PathBuf, String> {
+    let local_app_data = std::env::var_os("LOCALAPPDATA")
+        .ok_or_else(|| "Cannot locate the Windows local application data directory".to_string())?;
+    let directory = std::path::PathBuf::from(local_app_data)
+        .join("Axonkey")
+        .join("logs");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("Cannot create the driver log directory: {error}"))?;
+    Ok(directory.join(format!("driver-suite-{action}.log")))
+}
+
+#[cfg(target_os = "windows")]
+fn find_driver_installer(resource_dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let mut roots = vec![resource_dir.to_path_buf()];
     if let Ok(current) = std::env::current_dir() {
         roots.push(current.clone());
+        roots.push(current.join("src-tauri"));
+        roots.push(current.join("windows"));
         if let Some(parent) = current.parent() {
             roots.push(parent.to_path_buf());
         }
@@ -343,37 +398,60 @@ fn find_driver_script(
     }
 
     for root in roots {
-        for candidate in [root.join(file_name), root.join("scripts").join(file_name)] {
+        for candidate in [
+            root.join("driver").join("QuarborAxonkeyDriverInstaller.exe"),
+            root.join("windows").join("driver").join("QuarborAxonkeyDriverInstaller.exe"),
+            root.join("QuarborAxonkeyDriverInstaller.exe"),
+        ] {
             if candidate.is_file() {
-                return Ok(candidate);
+                return candidate
+                    .canonicalize()
+                    .map_err(|error| format!("Cannot resolve the driver installer: {error}"));
             }
         }
     }
 
-    Err(format!("Driver script was not found: {file_name}"))
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DriverActionResult {
-    log_path: String,
+    Err("QuarborAxonkeyDriverInstaller.exe was not found".into())
 }
 
 #[cfg(target_os = "windows")]
-fn driver_log_path(driver: &str, action: &str) -> Result<std::path::PathBuf, String> {
-    let local_app_data = std::env::var_os("LOCALAPPDATA")
-        .ok_or_else(|| "Cannot locate the Windows local application data directory".to_string())?;
-    let directory = std::path::PathBuf::from(local_app_data)
-        .join("Axonkey")
-        .join("logs");
-    std::fs::create_dir_all(&directory)
-        .map_err(|error| format!("Cannot create the driver log directory: {error}"))?;
-    let file_name = if driver == "audio" {
-        format!("vbcable-{action}.log")
-    } else {
-        format!("driver-{action}.log")
-    };
-    Ok(directory.join(file_name))
+fn driver_status_output_path() -> Result<std::path::PathBuf, String> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("Cannot create a driver status file name: {error}"))?
+        .as_nanos();
+    Ok(std::env::temp_dir().join(format!(
+        "axonkey-driver-status-{}-{stamp}.json",
+        std::process::id()
+    )))
+}
+
+#[cfg(target_os = "windows")]
+fn read_driver_installer_status(
+    resource_dir: &std::path::Path,
+) -> Result<DriverInstallerReport, String> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let installer = find_driver_installer(resource_dir)?;
+    let output_path = driver_status_output_path()?;
+    let process = std::process::Command::new(&installer)
+        .creation_flags(CREATE_NO_WINDOW)
+        .arg("--status")
+        .arg("--output")
+        .arg(&output_path)
+        .status()
+        .map_err(|error| format!("Cannot launch the driver status query: {error}"))?;
+    let raw = std::fs::read_to_string(&output_path).map_err(|error| {
+        format!(
+            "Driver status query returned {} without a result file: {error}",
+            process
+        )
+    });
+    let _ = std::fs::remove_file(&output_path);
+    let raw = raw?;
+    serde_json::from_str(&raw)
+        .map_err(|error| format!("Cannot parse the driver status result: {error}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -462,72 +540,110 @@ end run"#;
     }
     Ok(DriverActionResult {
         log_path: log_path.to_string_lossy().into_owned(),
+        exit_code: 0,
+        reboot_required: Some(false),
+        outcome: "success".into(),
+        message: format!("MiRemoteV 2ch {action} completed."),
     })
 }
 
 #[cfg(target_os = "windows")]
 fn run_driver_action(
-    driver: &str,
+    _driver: &str,
     action: &str,
     resource_dir: &std::path::Path,
 ) -> Result<DriverActionResult, String> {
     use std::os::windows::process::CommandExt;
-    use std::process::Stdio;
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let log_path = driver_log_path(driver, action)?;
+    let log_path = driver_log_path("input", action)?;
     let started = format!(
-        "Axonkey {driver} driver {action} requested: {:?}\r\n",
+        "Axonkey Quarbor driver suite {action} requested: {:?}\r\n",
         std::time::SystemTime::now()
     );
     std::fs::write(&log_path, started)
         .map_err(|error| format!("Cannot initialize the driver log: {error}"))?;
 
-    let script = find_driver_script(driver, action, resource_dir).map_err(|error| {
+    let installer = find_driver_installer(resource_dir).map_err(|error| {
         let _ = std::fs::write(&log_path, format!("ERROR: {error}\r\n"));
         format!("{error}. Log: {}", log_path.display())
     })?;
-    let mut command = std::process::Command::new("powershell.exe");
-    command
+    let status = std::process::Command::new(&installer)
         .creation_flags(CREATE_NO_WINDOW)
-        .arg("-NoProfile")
-        .arg("-NonInteractive")
-        .arg("-WindowStyle")
-        .arg("Hidden")
-        .arg("-ExecutionPolicy")
-        .arg("Bypass")
-        .arg("-File")
-        .arg(script);
-    if driver == "audio" {
-        command.arg("-Action").arg(action);
-    }
-    let status = command
-        .arg("-Confirmed")
-        .arg("-LogPath")
-        .arg(&log_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .arg(format!("--{action}"))
         .status()
         .map_err(|error| {
-            let message = format!("Cannot launch the driver script: {error}");
+            let message = format!("Cannot launch the driver installer: {error}");
             let _ = std::fs::write(&log_path, format!("ERROR: {message}\r\n"));
             format!("{message}. Log: {}", log_path.display())
         })?;
 
-    if !status.success() {
-        let exit_code = status
-            .code()
-            .map_or_else(|| "unknown".to_string(), |code| code.to_string());
+    let exit_code = status.code().unwrap_or(1);
+    let reboot_required = exit_code == 3010;
+    let outcome = if exit_code == 0 {
+        "success"
+    } else if reboot_required {
+        "reboot_required"
+    } else {
+        "failed"
+    };
+    let message = if exit_code == 0 {
+        "Quarbor 驱动安装器已完成操作。"
+    } else if reboot_required {
+        "Quarbor 驱动安装器已完成操作，但需要重启 Windows。"
+    } else if exit_code == 1223 {
+        "已取消管理员授权。"
+    } else {
+        "Quarbor 驱动安装器执行失败。"
+    };
+    let log_entry = format!(
+        "ExitCode: {exit_code}\r\nOutcome: {outcome}\r\nMessage: {message}\r\n"
+    );
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, log_entry.as_bytes()));
+    if exit_code != 0 && !reboot_required {
         return Err(format!(
-            "Driver {action} failed with exit code {exit_code}. Log: {}",
+            "Quarbor driver {action} failed with exit code {exit_code}. Log: {}",
             log_path.display()
         ));
     }
 
     Ok(DriverActionResult {
         log_path: log_path.to_string_lossy().into_owned(),
+        exit_code,
+        reboot_required: Some(reboot_required),
+        outcome: outcome.into(),
+        message: message.into(),
     })
+}
+
+#[tauri::command]
+async fn probe_driver_installer(
+    _app: tauri::AppHandle,
+) -> Result<DriverInstallerReport, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::Manager;
+
+        let resource_dir = _app
+            .path()
+            .resource_dir()
+            .map_err(|error| format!("Cannot resolve bundled resources: {error}"))?;
+        return tauri::async_runtime::spawn_blocking(move || {
+            read_driver_installer_status(&resource_dir)
+        })
+        .await
+        .map_err(|error| format!("Driver status task failed unexpectedly: {error}"))?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = _app;
+        Err("The Quarbor driver installer is only available on Windows".into())
+    }
 }
 
 #[tauri::command]
@@ -722,7 +838,6 @@ fn request_macos_permission(kind: String) -> Result<bool, String> {
 #[tauri::command]
 fn open_external_page(page: String) -> Result<(), String> {
     let url = match page.as_str() {
-        "vbcable" => "https://vb-audio.com/Cable/",
         "github" => "https://github.com/leowzz/axonkey",
         "releases" => "https://github.com/leowzz/axonkey/releases/latest",
         _ => return Err("Unsupported external page".into()),
@@ -764,7 +879,6 @@ fn open_external_page(page: String) -> Result<(), String> {
 #[derive(serde::Serialize)]
 struct SystemProbe {
     platform: &'static str,
-    input_driver_installed: bool,
     rc003_connected: bool,
     input_backend_ready: bool,
     input_backend_error: Option<String>,
@@ -1009,15 +1123,8 @@ async fn probe_system_state(app: tauri::AppHandle) -> Result<SystemProbe, String
 
     #[cfg(target_os = "windows")]
     {
-        let windows = std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into());
-        let input_driver_installed = std::path::PathBuf::from(windows)
-            .join("System32")
-            .join("drivers")
-            .join("keyboard.sys")
-            .is_file();
         Ok(SystemProbe {
             platform: "windows",
-            input_driver_installed,
             rc003_connected: input_status.device_connected,
             input_backend_ready: input_status.backend_ready,
             input_backend_error: input_status.error,
@@ -1036,7 +1143,6 @@ async fn probe_system_state(app: tauri::AppHandle) -> Result<SystemProbe, String
         let audio_status = audio_service.status();
         Ok(SystemProbe {
             platform: "macos",
-            input_driver_installed: true,
             rc003_connected: rc003_connected(
                 input_status.device_connected,
                 audio_status.bluetooth_connected,
@@ -1055,7 +1161,6 @@ async fn probe_system_state(app: tauri::AppHandle) -> Result<SystemProbe, String
     {
         Ok(SystemProbe {
             platform: "unsupported",
-            input_driver_installed: false,
             rc003_connected: false,
             input_backend_ready: input_status.backend_ready,
             input_backend_error: input_status.error,
@@ -1173,6 +1278,7 @@ pub fn run() {
             get_log_info,
             open_log_directory,
             launch_driver_action,
+            probe_driver_installer,
             open_windows_settings,
             open_system_settings,
             set_permission_helper_mode,

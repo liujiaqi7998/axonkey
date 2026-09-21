@@ -63,7 +63,7 @@ flowchart TB
 | 音频解码 | [`AdpcmDecoder.h`](AdpcmDecoder.h) | ADPCM 解码、平滑、16 kHz 到 48 kHz 插值 |
 | 音频输出 | [`VirtualMicrophoneSink.cpp`](VirtualMicrophoneSink.cpp) | 映射虚拟麦克风环形缓冲区并提交 PCM |
 | RPC | [`RpcServer.cpp`](RpcServer.cpp)、[`RpcServer.h`](RpcServer.h) | 命名管道帧传输、请求分发、事件发布 |
-| 配置 | [`ServiceConfig.cpp`](ServiceConfig.cpp) | 读取/保存增益和改键表配置 |
+| 配置 | [`ServiceConfig.cpp`](ServiceConfig.cpp) | 读取/保存总开关、增益和改键表配置 |
 | 日志 | [`ServiceLog.cpp`](ServiceLog.cpp) | spdlog 文件/调试器双写和大小限制 |
 
 ## 3. 启动、运行、停止时序
@@ -83,7 +83,7 @@ sequenceDiagram
     P->>R: Start()
     P->>W: 创建协调线程
     P-->>SCM: SERVICE_RUNNING
-    W->>W: Reconcile() 每 2 秒或设备事件唤醒
+    W->>W: Enabled=0 时立即返回；Enabled=1 时 Reconcile() 每 2 秒或设备事件唤醒
     W->>D: 创建 Endpoint / VoiceReceiver
     SCM->>P: STOP / SHUTDOWN
     P->>W: RequestStop()
@@ -107,6 +107,7 @@ sequenceDiagram
 
 1. 注册 `RegisterServiceCtrlHandlerExW`，状态设为 `SERVICE_START_PENDING`。
 2. 创建 `stopEvent_`，随后通过 `LoadServiceConfig()` 读取 64 位注册表配置。
+   `Enabled` 缺失时物化为 `1`；禁用状态下工作线程仍运行但设备初始化流程首行直接返回。
 3. 构造 `RpcServer` 并调用 `RpcServer::Start()`。首次管道实例创建失败会同步报告失败，不会假装 RPC 已就绪。
 4. 注册键盘设备接口通知。通知注册失败不会阻止服务运行，因为 `Worker()` 仍会每 2 秒扫描。
 5. 创建 `worker_`，状态设为 `SERVICE_RUNNING`，等待 `stopEvent_`。
@@ -125,7 +126,10 @@ sequenceDiagram
 
 ### 4.1 设备筛选与挂载
 
-`Service::Reconcile()` 位于 [`main.cpp:289`](main.cpp#L289)：
+`Service::Reconcile()` 位于 [`main.cpp:289`](main.cpp#L289)，其设备初始化流程首行检查 `Enabled`：
+
+- `Enabled=0`：直接返回，不枚举、挂载设备，也不创建端点或语音线程。
+- `Enabled=1`：继续执行以下协调步骤：
 
 1. 调用 `quarbor::EnumerateHidKeyboards(true)` 获取在线 HID Keyboard collection。
 2. 调用 [`ServiceConfig.cpp:27`](ServiceConfig.cpp#L27) 的 `IsRc003()`，按 `VID_2717`/`VID&012717` 和 `PID_32B8`/`PID&32B8` 匹配 RC003。
@@ -235,8 +239,9 @@ RPC 端点固定为 `\\.\pipe\AxonkeyService.v1`，定义在 [`RpcServer.h:27`](
 `Service::Run()` 在 [`main.cpp:216`](main.cpp#L216) 把 RPC handler 绑定到服务状态：
 
 - `ServiceInfo()`：服务名、版本 `0.3.1`、协议名和管道名。
+- `GetServiceStatus()` / `SetServiceStatus()`：读取或动态切换 `Enabled` 总开关；启用会立即协调设备，禁用会停止端点/语音线程并解绑过滤器，结果持久化到注册表。
 - `SetAudioGain()`：[`main.cpp:376`](main.cpp#L376)，限制到 `-30..30 dB`，更新已有 `VoiceReceiver` 并持久化。
-- `DeviceList()`：[`main.cpp:384`](main.cpp#L384)，返回挂载状态、端点路径、连接状态和两个 HID 开关。
+- `DeviceList()`：[`main.cpp:384`](main.cpp#L384)，返回挂载状态、端点路径、连接状态和两个 HID 开关；同时通过 Windows 蓝牙 GATT API 尽力读取电量（未知时不设置）和设备描述名称（未知时为空）。
 - `VoiceStatus()`：[`main.cpp:401`](main.cpp#L401)，从现有语音线程选取有意义的连接/活动状态。
 - `AudioLevel()`：[`main.cpp:410`](main.cpp#L410)，读取最近一次 peak/RMS 快照。
 
@@ -248,8 +253,9 @@ RPC 端点固定为 `\\.\pipe\AxonkeyService.v1`，定义在 [`RpcServer.h:27`](
 
 - `IsRc003()`：[`ServiceConfig.cpp:27`](ServiceConfig.cpp#L27)，统一大小写匹配 VID/PID。
 - `LoadServiceConfig()`：[`ServiceConfig.cpp:32`](ServiceConfig.cpp#L32)，打开 `HKLM\SOFTWARE\Axonkey\Service` 的 64 位视图。
-- `LoadServiceConfigFromKey()`：[`ServiceConfig.cpp:42`](ServiceConfig.cpp#L42)，读取 `RemapConfig`（`REG_BINARY`）和 `AudioGainDb`（`REG_DWORD`），无效值恢复默认 2 dB。
+- `LoadServiceConfigFromKey()`：[`ServiceConfig.cpp:42`](ServiceConfig.cpp#L42)，读取 `Enabled`、`RemapConfig`（`REG_BINARY`）和 `AudioGainDb`（`REG_DWORD`），无效值恢复默认值。
 - `SaveAudioGain()`：[`ServiceConfig.cpp:79`](ServiceConfig.cpp#L79)，供 RPC 更新增益。
+- `SaveServiceEnabled()`：供 `SetServiceStatus` 持久化总开关。
 
 当前服务启动时读取改键表，但 `Reconcile()` 没有把 `remap` 下发给驱动；因此改键表目前是存储定义，
 不是运行时生效路径。

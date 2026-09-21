@@ -15,6 +15,9 @@ PB_BIND(axonkey_service_v1_Response, axonkey_service_v1_Response, AUTO)
 PB_BIND(axonkey_service_v1_ServiceInfoRequest, axonkey_service_v1_ServiceInfoRequest, AUTO)
 
 
+PB_BIND(axonkey_service_v1_ServiceStatusRequest, axonkey_service_v1_ServiceStatusRequest, AUTO)
+
+
 PB_BIND(axonkey_service_v1_DeviceListRequest, axonkey_service_v1_DeviceListRequest, AUTO)
 
 
@@ -25,6 +28,12 @@ PB_BIND(axonkey_service_v1_AudioLevelRequest, axonkey_service_v1_AudioLevelReque
 
 
 PB_BIND(axonkey_service_v1_ServiceInfo, axonkey_service_v1_ServiceInfo, AUTO)
+
+
+PB_BIND(axonkey_service_v1_ServiceStatus, axonkey_service_v1_ServiceStatus, AUTO)
+
+
+PB_BIND(axonkey_service_v1_SetServiceStatusRequest, axonkey_service_v1_SetServiceStatusRequest, AUTO)
 
 
 PB_BIND(axonkey_service_v1_SetAudioGainRequest, axonkey_service_v1_SetAudioGainRequest, AUTO)

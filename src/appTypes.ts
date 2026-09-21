@@ -34,7 +34,6 @@ export type AppPage = 'home' | 'overview' | 'mapping' | 'settings' | 'about'
 
 export type SystemProbe = {
   platform: Platform
-  input_driver_installed: boolean
   rc003_connected: boolean
   input_backend_ready: boolean
   input_backend_error?: string | null
@@ -52,6 +51,43 @@ export type RemoteKeyEvent = {
 
 export type DriverActionResult = {
   logPath: string
+  exitCode?: number
+  rebootRequired?: boolean | null
+  outcome?: string
+  message?: string
+}
+
+export type DriverInstallerComponentStatus = {
+  packages: number | null
+  service: string | null
+  enabled: boolean | null
+  ready: boolean | null
+}
+
+export type DriverInstallerDevice = {
+  instanceId: string
+  present: boolean
+  started: boolean
+  driverBound: boolean
+  rebootRequired: boolean
+  problem: number
+}
+
+export type DriverInstallerReport = {
+  schemaVersion: number
+  action: 'install' | 'uninstall' | 'status' | 'help' | 'arguments' | 'output' | string
+  outcome: 'success' | 'reboot_required' | 'blocked' | 'failed' | string
+  exitCode: number
+  rebootRequired: boolean | null
+  message: string
+  status: {
+    complete: boolean
+    rebootRequired: boolean | null
+    hid: DriverInstallerComponentStatus
+    microphone: DriverInstallerComponentStatus
+    devices: DriverInstallerDevice[] | null
+    errors: Array<{ field: string; code: number; message: string }>
+  } | null
 }
 
 export type AudioProbe = {

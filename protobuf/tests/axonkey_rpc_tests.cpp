@@ -58,10 +58,26 @@ void TestServiceInfoRoundTrip() {
     ExpectEq(out.pipeName, in.pipeName, "pipe");
 }
 
+void TestServiceStatusRoundTrip() {
+    axonkey::rpc::ServiceStatus status{false};
+    auto bytes = axonkey::rpc::Serialize(status);
+    axonkey::rpc::ServiceStatus outStatus;
+    Expect(axonkey::rpc::Parse(bytes, outStatus), "service status parse");
+    ExpectEq(outStatus.enabled, false, "service status disabled");
+
+    axonkey::rpc::SetServiceStatus request{true};
+    bytes = axonkey::rpc::Serialize(request);
+    axonkey::rpc::SetServiceStatus outRequest;
+    Expect(axonkey::rpc::Parse(bytes, outRequest), "set service status parse");
+    ExpectEq(outRequest.enabled, true, "set service status enabled");
+}
+
 void TestDeviceListRoundTrip() {
     axonkey::rpc::DeviceList in;
     in.devices.push_back({"HID\\VID_2717", "\\\\.\\Quarbor0", true, true, true, true});
     in.devices.push_back({"HID\\VID_0001", "\\\\.\\Quarbor1", false, false, false, false});
+    in.devices[0].batteryLevel = 87;
+    in.devices[0].descriptionName = "Xiaomi RC003";
     const auto bytes = axonkey::rpc::Serialize(in);
     axonkey::rpc::DeviceList out;
     Expect(axonkey::rpc::Parse(bytes, out), "device list parse");
@@ -70,6 +86,10 @@ void TestDeviceListRoundTrip() {
         ExpectEq(out.devices[0].instanceId, in.devices[0].instanceId, "d0 id");
         ExpectEq(out.devices[0].endpointPath, in.devices[0].endpointPath, "d0 path");
         ExpectEq(out.devices[0].driverMounted, true, "d0 mounted");
+        ExpectEq(out.devices[0].batteryLevel, in.devices[0].batteryLevel, "d0 battery");
+        ExpectEq(out.devices[0].descriptionName, in.devices[0].descriptionName, "d0 description");
+        Expect(!out.devices[1].batteryLevel.has_value(), "d1 battery empty");
+        Expect(out.devices[1].descriptionName.empty(), "d1 description empty");
         ExpectEq(out.devices[1].connected, false, "d1 connected");
     }
 }
@@ -165,6 +185,7 @@ void TestKnownWireGain() {
 int main() {
     TestRequestRoundTrip();
     TestServiceInfoRoundTrip();
+    TestServiceStatusRoundTrip();
     TestDeviceListRoundTrip();
     TestAudioLevelRoundTrip();
     TestKeyboardEventRoundTrip();

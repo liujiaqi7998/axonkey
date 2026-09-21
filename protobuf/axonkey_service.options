@@ -13,10 +13,13 @@ axonkey.service.v1.ServiceInfo.version             type:FT_CALLBACK
 axonkey.service.v1.ServiceInfo.protocol_version    type:FT_CALLBACK
 axonkey.service.v1.ServiceInfo.pipe_name           type:FT_CALLBACK
 
+axonkey.service.v1.SetServiceStatusRequest.enabled type:FT_DEFAULT
+
 axonkey.service.v1.OperationResult.error           type:FT_CALLBACK
 
 axonkey.service.v1.Device.instance_id              type:FT_CALLBACK
 axonkey.service.v1.Device.endpoint_path            type:FT_CALLBACK
+axonkey.service.v1.Device.description_name         type:FT_CALLBACK
 
 # Few physical RC003 keyboards are attached at once.
 axonkey.service.v1.DeviceList.devices              max_count:16

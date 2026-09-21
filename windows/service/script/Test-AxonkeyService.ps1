@@ -132,6 +132,18 @@ function Assert-DistExe {
     return $exe
 }
 
+function Ensure-ServiceEnabledDefault {
+    $registryPath = 'HKLM:\SOFTWARE\Axonkey\Service'
+    if (-not (Test-Path -LiteralPath $registryPath)) {
+        New-Item -Path $registryPath -Force | Out-Null
+    }
+    $configuration = Get-ItemProperty -Path $registryPath -ErrorAction SilentlyContinue
+    if ($null -eq $configuration -or $null -eq $configuration.Enabled) {
+        New-ItemProperty -Path $registryPath -Name Enabled -PropertyType DWord -Value 1 -Force | Out-Null
+        Write-Info '已将服务总开关初始化为开启（Enabled=1）。'
+    }
+}
+
 function Format-FileInfo {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -244,6 +256,7 @@ function Install-ServiceFromDist {
             -StartupType Automatic | Out-Null
         Write-Ok "已创建服务 '$ServiceName'（自动启动, LocalSystem）。"
     }
+    Ensure-ServiceEnabledDefault
     Show-Status
 }
 

@@ -28,9 +28,9 @@ Interception 的安装和卸载需要管理员权限及 Windows 重启。
 安装脚本在提权前校验随项目提供的安装器和运行库哈希。
 卸载输入驱动后，自定义按键映射需要重新安装驱动才能使用。
 
-RC003 语音由独立的 Bluetooth GATT 链路处理。需要语音时安装 VB-CABLE；
-Axonkey 解码音频并输出到 `CABLE Input`，录音应用选择 `CABLE Output`。
-按键映射不要求安装 VB-CABLE。
+RC003 语音由 AxonkeyService 的独立 Bluetooth GATT 链路处理。Axonkey
+客户端不再连接 Windows 音频服务，也不再维护 CPAL 到 CABLE 的转发。
+虚拟声卡由 Quarbor 驱动套件提供，按键映射和语音服务均不依赖 VB-CABLE。
 
 详细安装步骤见 [README](../README.md)，双平台实现见
 [架构说明](./ARCHITECTURE.md)，驱动来源与校验值见

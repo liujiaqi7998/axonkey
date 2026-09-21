@@ -13,6 +13,8 @@ namespace axonkey_service {
 
 struct RpcHandlers {
     std::function<axonkey::rpc::ServiceInfo()> serviceInfo;
+    std::function<axonkey::rpc::ServiceStatus()> serviceStatus;
+    std::function<axonkey::rpc::OperationResult(bool)> setServiceStatus;
     std::function<axonkey::rpc::OperationResult(std::int32_t)> setAudioGain;
     std::function<axonkey::rpc::DeviceList()> devices;
     std::function<axonkey::rpc::VoiceStatus()> voiceStatus;

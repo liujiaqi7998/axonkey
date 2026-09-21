@@ -13,10 +13,19 @@ Windows 不会收到这些设备的原始按键输入。
 `ServiceConfig` 在服务启动时读取 64 位注册表配置：
 
 - 路径：`HKLM\SOFTWARE\Axonkey\Service`。
+- `Enabled`（`REG_DWORD`）：服务设备处理总开关，默认 `1`（开启）。服务初始化时读取；关闭时不枚举/挂载设备，并清理已注册设备和语音线程。
 - `AudioGainDb`（`REG_DWORD`）：音频增益，单位 dB，默认 `2`；按有符号 32 位整数读取，允许 `-30`～`30`。负数以补码保存，兼容原有正数配置。
 - `RemapConfig`（`REG_BINARY`）：`QUARBOR_REMAP_CONFIG` 的完整二进制结构，默认空表。
 
 缺失或无效的增益值会恢复并保存为 `2`。改键表仍只保留存储定义，不下发驱动。
+
+总开关可以直接修改注册表，也可以通过本地 protobuf RPC 动态控制。`SetServiceStatus`
+设置为 `true` 会立即执行一次设备协调并持久化；设置为 `false` 会取消设备注册、停止语音线程并持久化。
+查询使用 `GetServiceStatus`：
+
+```powershell
+Set-ItemProperty -Path 'HKLM:\SOFTWARE\Axonkey\Service' -Name Enabled -Type DWord -Value 0
+```
 
 增益在蓝牙音频完成解码及 48 kHz 重采样之后、写入虚拟麦克风驱动之前应用，
 包括结束时的尾音。幅度倍率为 `10^(dB/20)`，默认 2 dB 约为 1.259 倍；0 dB 不改变
@@ -80,9 +89,11 @@ PCM，再写入虚拟麦克风。虚拟麦克风已被其他语音线程占用�
 [nanopb](https://github.com/nanopb/nanopb) 0.4.9（CMake `FetchContent` 钉版本）
 完成，C++ 封装位于 `protobuf/axonkey_rpc.*`，生成代码在 `protobuf/generated/`。
 桌面端可通过 `GetServiceInfo`、
-`SetAudioGain`、`GetDevices`、`GetVoiceStatus`、`GetAudioLevel` 查询或控制服务，
+`GetServiceStatus`、`SetServiceStatus`、`SetAudioGain`、`GetDevices`、`GetVoiceStatus`、`GetAudioLevel` 查询或控制服务，
 并通过 `Subscribe` 订阅 `keyboard`、`audio_level`、`voice_status` 事件。键盘报告来自
 已挂载并拦截输入的 Quarbor 端点，音频电平来自增益处理后的 PCM 样本。
+`GetDevices` 的每个 `Device` 还会尽力返回蓝牙 GATT 电量 `battery_level` 和蓝牙描述名称
+`description_name`；读取失败时电量字段不设置、描述名称为空，不影响设备列表响应。
 
 每个 RPC 客户端都有独立的出站发送线程；请求响应和事件先进入有界队列，再由该线程
 按顺序写入管道。单次写入超过 2 秒会被取消，队列超过 256 帧或 4 MiB 也会主动断开

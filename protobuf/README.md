@@ -29,6 +29,7 @@ $np = "<path-to-nanopb-0.4.9>"
 $env:PYTHONPATH = "$np\generator;$np\generator\proto"
 protoc --plugin=protoc-gen-nanopb="$np\generator\protoc-gen-nanopb.bat" `
   -I protobuf -I "$np\generator\proto" `
+  --experimental_allow_proto3_optional `
   --nanopb_out=protobuf/generated `
   protobuf/axonkey_service.proto
 ```

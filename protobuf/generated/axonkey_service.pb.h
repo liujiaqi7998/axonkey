@@ -28,6 +28,10 @@ typedef struct _axonkey_service_v1_ServiceInfoRequest {
     char dummy_field;
 } axonkey_service_v1_ServiceInfoRequest;
 
+typedef struct _axonkey_service_v1_ServiceStatusRequest {
+    char dummy_field;
+} axonkey_service_v1_ServiceStatusRequest;
+
 typedef struct _axonkey_service_v1_DeviceListRequest {
     char dummy_field;
 } axonkey_service_v1_DeviceListRequest;
@@ -46,6 +50,14 @@ typedef struct _axonkey_service_v1_ServiceInfo {
     pb_callback_t protocol_version;
     pb_callback_t pipe_name;
 } axonkey_service_v1_ServiceInfo;
+
+typedef struct _axonkey_service_v1_ServiceStatus {
+    bool enabled;
+} axonkey_service_v1_ServiceStatus;
+
+typedef struct _axonkey_service_v1_SetServiceStatusRequest {
+    bool enabled;
+} axonkey_service_v1_SetServiceStatusRequest;
 
 typedef struct _axonkey_service_v1_SetAudioGainRequest {
     int32_t gain_db;
@@ -67,6 +79,9 @@ typedef struct _axonkey_service_v1_Device {
     bool input_blocked;
     bool data_forward_enabled;
     bool connected;
+    bool has_battery_level;
+    uint32_t battery_level;
+    pb_callback_t description_name;
 } axonkey_service_v1_Device;
 
 typedef struct _axonkey_service_v1_VoiceStatus {
@@ -114,14 +129,17 @@ extern "C" {
 #define axonkey_service_v1_Request_init_default  {0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define axonkey_service_v1_Response_init_default {0, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define axonkey_service_v1_ServiceInfoRequest_init_default {0}
+#define axonkey_service_v1_ServiceStatusRequest_init_default {0}
 #define axonkey_service_v1_DeviceListRequest_init_default {0}
 #define axonkey_service_v1_VoiceStatusRequest_init_default {0}
 #define axonkey_service_v1_AudioLevelRequest_init_default {0}
 #define axonkey_service_v1_ServiceInfo_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define axonkey_service_v1_ServiceStatus_init_default {0}
+#define axonkey_service_v1_SetServiceStatusRequest_init_default {0}
 #define axonkey_service_v1_SetAudioGainRequest_init_default {0}
 #define axonkey_service_v1_OperationResult_init_default {0, {{NULL}, NULL}}
 #define axonkey_service_v1_DeviceList_init_default {{{NULL}, NULL}}
-#define axonkey_service_v1_Device_init_default   {{{NULL}, NULL}, {{NULL}, NULL}, 0, 0, 0, 0}
+#define axonkey_service_v1_Device_init_default   {{{NULL}, NULL}, {{NULL}, NULL}, 0, 0, 0, 0, false, 0, {{NULL}, NULL}}
 #define axonkey_service_v1_VoiceStatus_init_default {{{NULL}, NULL}, {{NULL}, NULL}, 0, 0, 0, 0, 0}
 #define axonkey_service_v1_AudioLevel_init_default {0, 0, 0}
 #define axonkey_service_v1_KeyboardEvent_init_default {{{NULL}, NULL}, {{NULL}, NULL}, 0}
@@ -130,14 +148,17 @@ extern "C" {
 #define axonkey_service_v1_Request_init_zero     {0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define axonkey_service_v1_Response_init_zero    {0, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define axonkey_service_v1_ServiceInfoRequest_init_zero {0}
+#define axonkey_service_v1_ServiceStatusRequest_init_zero {0}
 #define axonkey_service_v1_DeviceListRequest_init_zero {0}
 #define axonkey_service_v1_VoiceStatusRequest_init_zero {0}
 #define axonkey_service_v1_AudioLevelRequest_init_zero {0}
 #define axonkey_service_v1_ServiceInfo_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define axonkey_service_v1_ServiceStatus_init_zero {0}
+#define axonkey_service_v1_SetServiceStatusRequest_init_zero {0}
 #define axonkey_service_v1_SetAudioGainRequest_init_zero {0}
 #define axonkey_service_v1_OperationResult_init_zero {0, {{NULL}, NULL}}
 #define axonkey_service_v1_DeviceList_init_zero  {{{NULL}, NULL}}
-#define axonkey_service_v1_Device_init_zero      {{{NULL}, NULL}, {{NULL}, NULL}, 0, 0, 0, 0}
+#define axonkey_service_v1_Device_init_zero      {{{NULL}, NULL}, {{NULL}, NULL}, 0, 0, 0, 0, false, 0, {{NULL}, NULL}}
 #define axonkey_service_v1_VoiceStatus_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, 0, 0, 0, 0, 0}
 #define axonkey_service_v1_AudioLevel_init_zero  {0, 0, 0}
 #define axonkey_service_v1_KeyboardEvent_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, 0}
@@ -156,6 +177,8 @@ extern "C" {
 #define axonkey_service_v1_ServiceInfo_version_tag 2
 #define axonkey_service_v1_ServiceInfo_protocol_version_tag 3
 #define axonkey_service_v1_ServiceInfo_pipe_name_tag 4
+#define axonkey_service_v1_ServiceStatus_enabled_tag 1
+#define axonkey_service_v1_SetServiceStatusRequest_enabled_tag 1
 #define axonkey_service_v1_SetAudioGainRequest_gain_db_tag 1
 #define axonkey_service_v1_OperationResult_success_tag 1
 #define axonkey_service_v1_OperationResult_error_tag 2
@@ -166,6 +189,8 @@ extern "C" {
 #define axonkey_service_v1_Device_input_blocked_tag 4
 #define axonkey_service_v1_Device_data_forward_enabled_tag 5
 #define axonkey_service_v1_Device_connected_tag  6
+#define axonkey_service_v1_Device_battery_level_tag 7
+#define axonkey_service_v1_Device_description_name_tag 8
 #define axonkey_service_v1_VoiceStatus_state_tag 1
 #define axonkey_service_v1_VoiceStatus_device_instance_id_tag 2
 #define axonkey_service_v1_VoiceStatus_connected_tag 3
@@ -206,6 +231,11 @@ X(a, CALLBACK, SINGULAR, BYTES,    payload,           4)
 #define axonkey_service_v1_ServiceInfoRequest_CALLBACK NULL
 #define axonkey_service_v1_ServiceInfoRequest_DEFAULT NULL
 
+#define axonkey_service_v1_ServiceStatusRequest_FIELDLIST(X, a) \
+
+#define axonkey_service_v1_ServiceStatusRequest_CALLBACK NULL
+#define axonkey_service_v1_ServiceStatusRequest_DEFAULT NULL
+
 #define axonkey_service_v1_DeviceListRequest_FIELDLIST(X, a) \
 
 #define axonkey_service_v1_DeviceListRequest_CALLBACK NULL
@@ -228,6 +258,16 @@ X(a, CALLBACK, SINGULAR, STRING,   protocol_version,   3) \
 X(a, CALLBACK, SINGULAR, STRING,   pipe_name,         4)
 #define axonkey_service_v1_ServiceInfo_CALLBACK pb_default_field_callback
 #define axonkey_service_v1_ServiceInfo_DEFAULT NULL
+
+#define axonkey_service_v1_ServiceStatus_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     enabled,           1)
+#define axonkey_service_v1_ServiceStatus_CALLBACK NULL
+#define axonkey_service_v1_ServiceStatus_DEFAULT NULL
+
+#define axonkey_service_v1_SetServiceStatusRequest_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     enabled,           1)
+#define axonkey_service_v1_SetServiceStatusRequest_CALLBACK NULL
+#define axonkey_service_v1_SetServiceStatusRequest_DEFAULT NULL
 
 #define axonkey_service_v1_SetAudioGainRequest_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, INT32,    gain_db,           1)
@@ -252,7 +292,9 @@ X(a, CALLBACK, SINGULAR, STRING,   endpoint_path,     2) \
 X(a, STATIC,   SINGULAR, BOOL,     driver_mounted,    3) \
 X(a, STATIC,   SINGULAR, BOOL,     input_blocked,     4) \
 X(a, STATIC,   SINGULAR, BOOL,     data_forward_enabled,   5) \
-X(a, STATIC,   SINGULAR, BOOL,     connected,         6)
+X(a, STATIC,   SINGULAR, BOOL,     connected,         6) \
+X(a, STATIC,   OPTIONAL, UINT32,   battery_level,     7) \
+X(a, CALLBACK, SINGULAR, STRING,   description_name,   8)
 #define axonkey_service_v1_Device_CALLBACK pb_default_field_callback
 #define axonkey_service_v1_Device_DEFAULT NULL
 
@@ -297,10 +339,13 @@ X(a, CALLBACK, SINGULAR, BYTES,    payload,           2)
 extern const pb_msgdesc_t axonkey_service_v1_Request_msg;
 extern const pb_msgdesc_t axonkey_service_v1_Response_msg;
 extern const pb_msgdesc_t axonkey_service_v1_ServiceInfoRequest_msg;
+extern const pb_msgdesc_t axonkey_service_v1_ServiceStatusRequest_msg;
 extern const pb_msgdesc_t axonkey_service_v1_DeviceListRequest_msg;
 extern const pb_msgdesc_t axonkey_service_v1_VoiceStatusRequest_msg;
 extern const pb_msgdesc_t axonkey_service_v1_AudioLevelRequest_msg;
 extern const pb_msgdesc_t axonkey_service_v1_ServiceInfo_msg;
+extern const pb_msgdesc_t axonkey_service_v1_ServiceStatus_msg;
+extern const pb_msgdesc_t axonkey_service_v1_SetServiceStatusRequest_msg;
 extern const pb_msgdesc_t axonkey_service_v1_SetAudioGainRequest_msg;
 extern const pb_msgdesc_t axonkey_service_v1_OperationResult_msg;
 extern const pb_msgdesc_t axonkey_service_v1_DeviceList_msg;
@@ -315,10 +360,13 @@ extern const pb_msgdesc_t axonkey_service_v1_Event_msg;
 #define axonkey_service_v1_Request_fields &axonkey_service_v1_Request_msg
 #define axonkey_service_v1_Response_fields &axonkey_service_v1_Response_msg
 #define axonkey_service_v1_ServiceInfoRequest_fields &axonkey_service_v1_ServiceInfoRequest_msg
+#define axonkey_service_v1_ServiceStatusRequest_fields &axonkey_service_v1_ServiceStatusRequest_msg
 #define axonkey_service_v1_DeviceListRequest_fields &axonkey_service_v1_DeviceListRequest_msg
 #define axonkey_service_v1_VoiceStatusRequest_fields &axonkey_service_v1_VoiceStatusRequest_msg
 #define axonkey_service_v1_AudioLevelRequest_fields &axonkey_service_v1_AudioLevelRequest_msg
 #define axonkey_service_v1_ServiceInfo_fields &axonkey_service_v1_ServiceInfo_msg
+#define axonkey_service_v1_ServiceStatus_fields &axonkey_service_v1_ServiceStatus_msg
+#define axonkey_service_v1_SetServiceStatusRequest_fields &axonkey_service_v1_SetServiceStatusRequest_msg
 #define axonkey_service_v1_SetAudioGainRequest_fields &axonkey_service_v1_SetAudioGainRequest_msg
 #define axonkey_service_v1_OperationResult_fields &axonkey_service_v1_OperationResult_msg
 #define axonkey_service_v1_DeviceList_fields &axonkey_service_v1_DeviceList_msg
@@ -344,7 +392,10 @@ extern const pb_msgdesc_t axonkey_service_v1_Event_msg;
 #define axonkey_service_v1_AudioLevel_size       21
 #define axonkey_service_v1_DeviceListRequest_size 0
 #define axonkey_service_v1_ServiceInfoRequest_size 0
+#define axonkey_service_v1_ServiceStatusRequest_size 0
+#define axonkey_service_v1_ServiceStatus_size    2
 #define axonkey_service_v1_SetAudioGainRequest_size 11
+#define axonkey_service_v1_SetServiceStatusRequest_size 2
 #define axonkey_service_v1_SubscribeRequest_size 6
 #define axonkey_service_v1_VoiceStatusRequest_size 0
 

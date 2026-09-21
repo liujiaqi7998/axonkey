@@ -10,6 +10,8 @@ package axonkey.service.v1;
 // names in the service block; payload carries the corresponding message.
 service AxonkeyService {
   rpc GetServiceInfo(ServiceInfoRequest) returns (ServiceInfo);
+  rpc GetServiceStatus(ServiceStatusRequest) returns (ServiceStatus);
+  rpc SetServiceStatus(SetServiceStatusRequest) returns (OperationResult);
   rpc SetAudioGain(SetAudioGainRequest) returns (OperationResult);
   rpc GetDevices(DeviceListRequest) returns (DeviceList);
   rpc GetVoiceStatus(VoiceStatusRequest) returns (VoiceStatus);
@@ -32,6 +34,7 @@ message Response {
 }
 
 message ServiceInfoRequest {}
+message ServiceStatusRequest {}
 message DeviceListRequest {}
 message VoiceStatusRequest {}
 message AudioLevelRequest {}
@@ -42,6 +45,9 @@ message ServiceInfo {
   string protocol_version = 3;
   string pipe_name = 4;
 }
+
+message ServiceStatus { bool enabled = 1; }
+message SetServiceStatusRequest { bool enabled = 1; }
 
 message SetAudioGainRequest { int32 gain_db = 1; }
 message OperationResult { bool success = 1; string error = 2; }
@@ -54,6 +60,10 @@ message Device {
   bool input_blocked = 4;
   bool data_forward_enabled = 5;
   bool connected = 6;
+  // Best-effort Bluetooth metadata. Omitted/empty means Windows could not
+  // read the value during this request.
+  optional uint32 battery_level = 7;
+  string description_name = 8;
 }
 
 message VoiceStatus {
