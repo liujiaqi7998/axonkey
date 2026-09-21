@@ -144,11 +144,11 @@ Windows 首次使用设置的“驱动安装”页包含后台服务状态，以
 应用使用 `scripts/manage-windows-service.ps1` 管理固定的 `AxonkeyService`。
 安装会将随应用打包的服务复制到 `%ProgramFiles%\Axonkey\Service\AxonkeyService.exe`，
 以 LocalSystem 注册并设置开机自动启动；安装后可单独点击“启动”。
-卸载先停止服务再删除服务注册，保留服务程序、日志和注册表配置。
+卸载先停止服务、删除服务注册，再删除 `%ProgramFiles%\Axonkey\Service` 下的服务程序；日志和注册表配置保留。
 操作错误记录在 `%ProgramData%\Axonkey\Logs\ServiceManagement.log`。
 
 `npm run build:windows-service` 使用 Visual Studio C++ 工具链和 CMake/Ninja 构建服务，
-产物位于 `.build/service-bundle/AxonkeyService.exe`，使用静态 MSVC 运行库。
+产物位于 `windows/service/dist/AxonkeyService.exe`，使用静态 MSVC 运行库。
 Tauri 的开发与打包入口会先自动执行此构建，发布资源包含服务程序和管理脚本。
 直接运行 Cargo 测试前，需先执行一次该构建命令以准备资源。
 

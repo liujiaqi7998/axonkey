@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
 project(AxonkeyService LANGUAGES C CXX)
 
+if(MSVC)
+  # The installer ships the service as a single EXE. Statically link the MSVC
+  # runtime so LocalSystem does not depend on a developer-machine VC runtime.
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded" CACHE STRING
+    "Runtime library used by the packaged service" FORCE)
+endif()
+
 # Pin spdlog v1.15.3 to an immutable commit for reproducible builds.
 include(FetchContent)
 set(SPDLOG_WCHAR_FILENAMES ON CACHE BOOL "Support Unicode service paths" FORCE)

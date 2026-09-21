@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -43,15 +43,30 @@ function msvcEnvironment() {
     const separator = line.indexOf('=')
     if (separator > 0) env[line.slice(0, separator)] = line.slice(separator + 1)
   }
+  env.CC = 'cl.exe'
+  env.CXX = 'cl.exe'
   return env
 }
 
 try {
   const env = msvcEnvironment()
+  const serviceBuildDirectory = join(root, '.build/service')
+  const cachePath = join(serviceBuildDirectory, 'CMakeCache.txt')
+  if (existsSync(cachePath)) {
+    const cache = readFileSync(cachePath, 'utf8')
+    const compiler = cache.match(/^CMAKE_CXX_COMPILER:FILEPATH=(.+)$/m)?.[1]?.trim().toLowerCase()
+    // A previous configure can leave a MinGW compiler in the Ninja cache even
+    // after the MSVC environment has been initialized. It produces an EXE
+    // that needs libgcc/libstdc++ DLLs, which are not shipped with the app.
+    if (!compiler || !compiler.endsWith('cl.exe')) rmSync(serviceBuildDirectory, { recursive: true, force: true })
+  }
   // Keep the configure command aligned with the documented Windows service
   // build: cmake -S windows/service -B .build/service -G Ninja -DCMAKE_BUILD_TYPE=Release
   // CMake writes the Release executable into windows/service/dist.
   run('cmake', ['-S', 'windows/service', '-B', '.build/service', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release'], env)
+  const configuredCache = readFileSync(cachePath, 'utf8')
+  const configuredCompiler = configuredCache.match(/^CMAKE_CXX_COMPILER:FILEPATH=(.+)$/m)?.[1]?.trim().toLowerCase()
+  if (!configuredCompiler?.endsWith('cl.exe')) throw new Error(`AxonkeyService must be built with MSVC; configured compiler: ${configuredCompiler || 'unknown'}`)
   run('cmake', ['--build', '.build/service', '--config', 'Release', '--target', 'AxonkeyService'], env)
   const executable = join(root, 'windows/service/dist/AxonkeyService.exe')
   if (!existsSync(executable)) throw new Error(`The service build did not produce ${executable}.`)

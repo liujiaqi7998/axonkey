@@ -95,6 +95,12 @@ try {
                 $result = Invoke-CimMethod -InputObject $record -MethodName Delete
                 if ($result.ReturnValue -ne 0) { throw "Service removal failed: Win32=$($result.ReturnValue)" }
             }
+            $programFilesRoot = $env:ProgramW6432
+            if (-not $programFilesRoot) { $programFilesRoot = $env:ProgramFiles }
+            $directory = Join-Path $programFilesRoot 'Axonkey\Service'
+            if (Test-Path -LiteralPath $directory -PathType Container) {
+                Remove-Item -LiteralPath $directory -Recurse -Force
+            }
         }
     }
     Write-ServiceLog "$Action completed"
