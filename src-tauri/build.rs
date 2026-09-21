@@ -1,4 +1,13 @@
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let proto = "../protobuf/axonkey_service.proto";
+        println!("cargo:rerun-if-changed={proto}");
+        let protoc = protoc_bin_vendored::protoc_bin_path().expect("bundled protoc");
+        prost_build::Config::new()
+            .protoc_executable(protoc)
+            .compile_protos(&[proto], &["../protobuf"])
+            .expect("generate AxonkeyService protobuf types");
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         cc::Build::new()
             .file("native/macos_input.m")

@@ -92,26 +92,40 @@ export function WindowsServiceControl({ nativeRuntime, disabled, onBusyChange, o
     }
   }
 
+  const rpcReady = status?.state === 'running' && status.rpc?.connected === true && status.rpc.info !== null
   const stateLabel = !nativeRuntime
     ? '仅桌面版可检测'
+    : status?.state === 'running' && !rpcReady ? 'RPC 未就绪'
     : status ? serviceStateLabels[status.state] : checking ? '检测中…' : '无法获取状态'
+  const rpcInfo = rpcReady ? status?.rpc.info : null
+  const rpcLabel = !nativeRuntime ? '仅桌面版可检测'
+    : !status ? checking ? '检测中…' : '未检查'
+    : status.state !== 'running' ? '服务未运行'
+    : rpcReady ? '已响应' : '未就绪'
+  const rpcError = status?.state === 'running' && !rpcReady
+    ? `GetServiceInfo 未通过，后台服务尚未就绪。${status.rpc?.error ? ` ${status.rpc.error}` : ''}`
+    : ''
 
   return <section className="setup-service-panel" aria-labelledby="setup-service-title">
     <div className="setup-service-heading">
       <div className="setup-service-title">
         <h3 id="setup-service-title">AxonkeyService 后台服务</h3>
-        <SettingsHelp id="setup-service-help" label="AxonkeyService 后台服务">服务负责 Windows 上的遥控器设备管理和语音接收。安装、启动、停止和卸载均会通过 PowerShell 请求管理员授权。</SettingsHelp>
+        <SettingsHelp id="setup-service-help" label="AxonkeyService 后台服务">服务负责 Windows 上的遥控器设备管理和语音接收。只有 GetServiceInfo 响应正常才视为运行中。安装、启动、停止和卸载均会通过 PowerShell 请求管理员授权。</SettingsHelp>
       </div>
       <button type="button" className="setup-service-refresh" aria-label="刷新服务状态" title="刷新服务状态" disabled={!nativeRuntime || checking || pending !== null} onClick={() => void refresh()}><RotateCcw size={15} /></button>
     </div>
     <div className="setup-service-status" aria-live="polite">
-      <span className={`setup-service-badge ${status?.state ?? 'unknown'}`}><i aria-hidden="true" />{stateLabel}</span>
+      <span className={`setup-service-badge ${status?.state === 'running' && !rpcReady ? 'rpcUnavailable' : status?.state ?? 'unknown'}`}><i aria-hidden="true" />{stateLabel}</span>
       {status?.state === 'running' && status.processId > 0 && <span>PID {status.processId}</span>}
+    </div>
+    <div className="setup-service-rpc" aria-live="polite">
+      <span>GetServiceInfo：{rpcLabel}</span>
+      {rpcInfo && <span>{rpcInfo.name} v{rpcInfo.version} · {rpcInfo.protocolVersion} · {rpcInfo.pipeName}</span>}
     </div>
     <div className="setup-service-actions">
       {actions.map(({ kind, label, pending: busyLabel, Icon }) => <button key={kind} type="button" className={`dialog-secondary ${kind === 'uninstall' ? 'danger' : ''}`} aria-label={`${label}服务`} disabled={!nativeRuntime || disabled || pending !== null || !canManageService(status?.state, kind)} onClick={() => void run(kind)}><Icon size={14} />{pending === kind ? busyLabel : label}</button>)}
     </div>
     {error && <p className="setup-service-feedback error" role="alert">{error}</p>}
-    {!error && <p className="setup-service-feedback" role="status">{pending ? '正在请求管理员权限，请在 Windows 授权窗口中允许。' : message || (status?.state === 'stopped' && status.exitCode !== 0 ? `服务已退出，系统错误码：${status.exitCode}。` : '')}</p>}
+    {!error && <p className={`setup-service-feedback ${!pending && rpcError ? 'error' : ''}`} role="status">{pending ? '正在请求管理员权限，请在 Windows 授权窗口中允许。' : rpcError || message || (status?.state === 'stopped' && status.exitCode !== 0 ? `服务已退出，系统错误码：${status.exitCode}。` : '')}</p>}
   </section>
 }

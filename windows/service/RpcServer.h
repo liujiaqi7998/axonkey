@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -27,7 +28,7 @@ struct RpcHandlers {
 class RpcServer final {
 public:
     static constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\AxonkeyService.v1";
-    explicit RpcServer(RpcHandlers handlers);
+    explicit RpcServer(RpcHandlers handlers, std::wstring pipeName = kPipeName);
     ~RpcServer();
     RpcServer(const RpcServer&) = delete;
     RpcServer& operator=(const RpcServer&) = delete;
@@ -47,6 +48,7 @@ private:
     HANDLE CreatePipe() const;
 
     RpcHandlers handlers_;
+    std::wstring pipeName_;
     std::atomic_bool stopping_{false};
     HANDLE stopEvent_ = nullptr;
     std::thread acceptThread_;

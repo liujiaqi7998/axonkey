@@ -1,5 +1,7 @@
 mod audio_service;
 mod input_service;
+#[cfg(target_os = "windows")]
+mod service_rpc;
 
 use audio_service::{AudioService, AudioServiceStatus};
 use input_service::mouse::MouseService;
@@ -383,6 +385,8 @@ struct WindowsServiceStatus {
     state: String,
     process_id: u32,
     exit_code: u32,
+    #[cfg(target_os = "windows")]
+    rpc: Option<service_rpc::ServiceRpcStatus>,
 }
 
 #[cfg(target_os = "windows")]
@@ -462,6 +466,7 @@ fn query_windows_service() -> Result<WindowsServiceStatus, String> {
             .get("exitCode")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0) as u32,
+        rpc: None,
     })
 }
 
@@ -522,12 +527,16 @@ fn run_windows_service_action(
 }
 
 #[tauri::command]
-async fn get_windows_service_status() -> Result<WindowsServiceStatus, String> {
+async fn get_windows_service_status(
+    #[cfg(target_os = "windows")] rpc: tauri::State<'_, service_rpc::ServiceConnection>,
+) -> Result<WindowsServiceStatus, String> {
     #[cfg(target_os = "windows")]
     {
-        return tauri::async_runtime::spawn_blocking(query_windows_service)
+        let mut status = tauri::async_runtime::spawn_blocking(query_windows_service)
             .await
-            .map_err(|error| format!("服务查询失败：{error}"))?;
+            .map_err(|error| format!("服务查询失败：{error}"))??;
+        status.rpc = Some(rpc.status());
+        return Ok(status);
     }
     #[cfg(not(target_os = "windows"))]
     Err("服务管理仅支持 Windows。".into())
@@ -537,6 +546,7 @@ async fn get_windows_service_status() -> Result<WindowsServiceStatus, String> {
 async fn manage_windows_service(
     app: tauri::AppHandle,
     action: WindowsServiceAction,
+    #[cfg(target_os = "windows")] rpc: tauri::State<'_, service_rpc::ServiceConnection>,
 ) -> Result<WindowsServiceStatus, String> {
     #[cfg(target_os = "windows")]
     {
@@ -546,11 +556,13 @@ async fn manage_windows_service(
             .path()
             .resource_dir()
             .map_err(|error| format!("Cannot resolve bundled resources: {error}"))?;
-        return tauri::async_runtime::spawn_blocking(move || {
+        let mut status = tauri::async_runtime::spawn_blocking(move || {
             run_windows_service_action(&resource_dir, action)
         })
         .await
-        .map_err(|error| format!("服务操作失败：{error}"))?;
+        .map_err(|error| format!("服务操作失败：{error}"))??;
+        status.rpc = Some(rpc.status());
+        return Ok(status);
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1431,6 +1443,8 @@ pub fn run() {
             app.manage(AudioService::start());
             app.manage(InputService::start());
             app.manage(MouseService::start());
+            #[cfg(target_os = "windows")]
+            app.manage(service_rpc::ServiceConnection::start());
             app.manage(PermissionHelperWindowState::default());
             app.state::<InputService>()
                 .set_event_app(app.handle().clone());

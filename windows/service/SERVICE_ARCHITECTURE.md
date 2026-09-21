@@ -217,7 +217,7 @@ flowchart LR
 
 ## 6. 本地 RPC 框架
 
-RPC 端点固定为 `\\.\pipe\AxonkeyService.v1`，定义在 [`RpcServer.h:27`](RpcServer.h#L27)。
+RPC 端点固定为 `\\.\pipe\AxonkeyService.v1`，定义在 [`RpcServer.h:30`](RpcServer.h#L30)。
 它不是 gRPC 运行时，而是“nanopb 编解码的 protobuf 消息 + 自定义长度帧 + Windows named pipe”：
 
 ```text
@@ -227,13 +227,13 @@ RPC 端点固定为 `\\.\pipe\AxonkeyService.v1`，定义在 [`RpcServer.h:27`](
 └──────────────┴──────────────────────────────┘
 ```
 
-- `ReadFrame()` / `WriteFrame()`：[`RpcServer.cpp:36`](RpcServer.cpp#L36)，最大帧 1 MiB。
-- `CreatePipe()`：[`RpcServer.cpp:75`](RpcServer.cpp#L75)，创建无限实例、字节流模式的双向管道；ACL 允许 SYSTEM、管理员和已认证用户。
-- `Start()`：[`RpcServer.cpp:94`](RpcServer.cpp#L94)，先同步验证第一个管道实例，再启动 accept 线程。
-- `AcceptLoop()`：[`RpcServer.cpp:138`](RpcServer.cpp#L138)，接受连接后先创建下一个监听实例，再为当前客户端创建线程，减少客户端看到 `ERROR_PIPE_BUSY` 的窗口。
+- `ReadFrame()` / `WriteFrame()`：[`RpcServer.cpp:53`](RpcServer.cpp#L53)，最大帧 1 MiB。
+- `CreatePipe()`：[`RpcServer.cpp:240`](RpcServer.cpp#L240)，创建无限实例、字节流模式且启用 `FILE_FLAG_OVERLAPPED` 的双向管道；ACL 允许 SYSTEM、管理员和已认证用户。同一客户端的请求读取与响应/事件写入可并行进行，不会因同步句柄串行化而互相阻塞。
+- `Start()`：[`RpcServer.cpp:259`](RpcServer.cpp#L259)，先同步验证第一个管道实例，再启动 accept 线程。
+- `AcceptLoop()`：[`RpcServer.cpp:303`](RpcServer.cpp#L303)，用重叠 `ConnectNamedPipe` 等待连接或停止事件；接受后先创建下一个监听实例，再为当前客户端创建线程，减少客户端看到 `ERROR_PIPE_BUSY` 的窗口。
 - `ClientLoop()`：解析请求并调用 `RpcHandlers`；响应只进入该客户端的出站队列，不在请求线程中同步写 Pipe。
-- `Client::SenderLoop()`：每个连接独立的发送线程，按入队顺序串行写入响应和事件，保证 `Subscribe` 响应先于首个事件。
-- `Client::WatchdogLoop()`：监视当前同步写入，超过 2 秒调用 `CancelSynchronousIo`/`CancelIoEx`，随后断开无响应客户端。
+- `Client::SenderLoop()`：每个连接独立的发送线程，按入队顺序用重叠 I/O 写入响应和事件，保证 `Subscribe` 响应先于首个事件。每次读写都等待自身的 `OVERLAPPED` 完成后才释放事件与缓冲区。
+- `Client::WatchdogLoop()`：监视当前写入，超过 2 秒调用 `CancelIoEx`，随后断开无响应客户端。
 - `Publish()`：只复制订阅客户端快照并入队，不持有全局客户端锁执行 I/O；单客户端队列最多 256 帧或 4 MiB，超过即断开慢客户端。
 
 `Service::Run()` 在 [`main.cpp:216`](main.cpp#L216) 把 RPC handler 绑定到服务状态：
@@ -277,7 +277,7 @@ RPC 端点固定为 `\\.\pipe\AxonkeyService.v1`，定义在 [`RpcServer.h:27`](
 - `AxonkeyService` 可执行文件：C++20，依赖 SetupAPI、CfgMgr32、Advapi32、Windows Runtime、OLE32、Shell32、`AxonkeyRpc` 和 shared driver helper。
 - C++/WinRT 头从 Windows SDK 的 `cppwinrt` 目录查找。
 - Debug symbols：MSVC 下通过 `/Zi` 和 `/DEBUG` 生成 PDB。
-- `axonkey_rpc_tests`：编解码往返与经典 wire 兼容性测试（`ctest`）。
+- `axonkey_rpc_tests` / `axonkey_rpc_pipe_tests`：编解码往返、经典 wire 兼容性，以及连续请求、订阅事件和关闭期间的管道集成测试（`ctest`）。
 
 ## 8. 线程、锁和错误处理要点
 
@@ -306,7 +306,7 @@ RPC 端点固定为 `\\.\pipe\AxonkeyService.v1`，定义在 [`RpcServer.h:27`](
 | 音频开始但没有输出 | `VoiceAudioSession::Open()` [`VoiceAudioSession.cpp:26`](VoiceAudioSession.cpp#L26) | 虚拟麦克风是否被独占、`MAP_RING` 格式校验 |
 | 音频失真/断续 | `AdpcmDecoder::Append()` [`AdpcmDecoder.h:38`](AdpcmDecoder.h#L38) | `0x0A` 同步、frame bytes、GATT 队列溢出 |
 | 缓冲区满或录音端无声音 | `VirtualMicrophoneSink::Push()` [`VirtualMicrophoneSink.cpp:124`](VirtualMicrophoneSink.cpp#L124) | `QUERY_STATE` 的 `FreeBytes`、录音应用是否选择 Quarbor Virtual Microphone |
-| RPC 请求失败 | `RpcServer::ClientLoop()` [`RpcServer.cpp:181`](RpcServer.cpp#L181) | 帧长度、protobuf Parse、handler 返回的 `OperationResult` |
+| RPC 请求失败 | `RpcServer::ClientLoop()` [`RpcServer.cpp:382`](RpcServer.cpp#L382) | 帧长度、protobuf Parse、handler 返回的 `OperationResult`，以及 `TransferExact()` 的重叠读写取消 |
 
 ## 10. 最短阅读路径
 

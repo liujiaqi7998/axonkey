@@ -414,9 +414,12 @@ h1 { color: #202327; font-size: 28px; letter-spacing: 0; line-height: 1; }
 .setup-service-badge { display: inline-flex; align-items: center; gap: 7px; min-height: 25px; padding: 0 9px; border: 1px solid #d5d9dc; border-radius: 7px; color: #657079; background: #fff; }
 .setup-service-badge i { width: 8px; height: 8px; border-radius: 50%; background: #929aa1; }
 .setup-service-badge.running i { background: #3da052; box-shadow: 0 0 0 3px #d8efdd; }
+.setup-service-badge.rpcUnavailable i { background: #c48734; box-shadow: 0 0 0 3px #f4e4cf; }
 .setup-service-badge.stopped i { background: #c48734; box-shadow: 0 0 0 3px #f4e4cf; }
 .setup-service-badge.notInstalled i { background: #929aa1; }
 .setup-service-badge.startPending i, .setup-service-badge.stopPending i, .setup-service-badge.deletePending i { background: #3d7db4; }
+.setup-service-rpc { display: flex; flex-wrap: wrap; gap: 3px 10px; margin-top: 8px; color: #69737c; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.setup-service-rpc > span:first-child { flex: 0 0 auto; color: #44505a; }
 .setup-service-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .setup-service-actions .dialog-secondary { height: 29px; padding: 0 9px; font-size: 12px; }
 .setup-service-feedback { min-height: 17px; margin: 8px 0 0; color: #69737c; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }

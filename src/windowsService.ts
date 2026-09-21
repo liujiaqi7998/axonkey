@@ -12,6 +12,16 @@ export type WindowsServiceStatus = {
   state: WindowsServiceState
   processId: number
   exitCode: number
+  rpc: {
+    connected: boolean
+    info: {
+      name: string
+      version: string
+      protocolVersion: string
+      pipeName: string
+    } | null
+    error: string | null
+  }
 }
 
 export type WindowsServiceAction = 'install' | 'uninstall' | 'start' | 'stop'

@@ -18,24 +18,36 @@ constexpr auto kWriteTimeout = std::chrono::seconds(2);
 
 struct FrameHeader { std::uint32_t size; };
 
-bool ReadExact(HANDLE pipe, void* destination, DWORD size) {
-    auto* bytes = static_cast<std::uint8_t*>(destination);
+bool TransferExact(HANDLE pipe, void* buffer, DWORD size, bool write) {
+    auto event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!event) return false;
+    auto* bytes = static_cast<std::uint8_t*>(buffer);
     while (size) {
-        DWORD read = 0;
-        if (!ReadFile(pipe, bytes, size, &read, nullptr) || !read) return false;
-        bytes += read; size -= read;
+        OVERLAPPED operation{};
+        operation.hEvent = event;
+        ResetEvent(event);
+        const auto started = write
+            ? WriteFile(pipe, bytes, size, nullptr, &operation)
+            : ReadFile(pipe, bytes, size, nullptr, &operation);
+        const auto pending = !started && GetLastError() == ERROR_IO_PENDING;
+        DWORD transferred = 0;
+        if ((!started && !pending) ||
+                !GetOverlappedResult(pipe, &operation, &transferred, pending) || !transferred) {
+            CloseHandle(event);
+            return false;
+        }
+        bytes += transferred; size -= transferred;
     }
+    CloseHandle(event);
     return true;
 }
 
+bool ReadExact(HANDLE pipe, void* destination, DWORD size) {
+    return TransferExact(pipe, destination, size, false);
+}
+
 bool WriteExact(HANDLE pipe, const void* source, DWORD size) {
-    auto* bytes = static_cast<const std::uint8_t*>(source);
-    while (size) {
-        DWORD written = 0;
-        if (!WriteFile(pipe, bytes, size, &written, nullptr) || !written) return false;
-        bytes += written; size -= written;
-    }
-    return true;
+    return TransferExact(pipe, const_cast<void*>(source), size, true);
 }
 
 bool ReadFrame(HANDLE pipe, Bytes& frame) {
@@ -121,13 +133,6 @@ struct RpcServer::Client {
     void JoinWorkers() {
         if (senderThread.joinable()) senderThread.join();
         if (watchdogThread.joinable()) watchdogThread.join();
-        HANDLE writerHandle = nullptr;
-        {
-            std::lock_guard lock(writeStateMutex);
-            writerHandle = writerThreadHandle;
-            writerThreadHandle = nullptr;
-        }
-        if (writerHandle) CloseHandle(writerHandle);
     }
 
     void ClosePipeHandles() {
@@ -142,20 +147,6 @@ struct RpcServer::Client {
 
 private:
     void SenderLoop() {
-        HANDLE duplicatedThread = nullptr;
-        if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
-                &duplicatedThread, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-            LogMessage(L"Axonkey RPC sender thread handle could not be duplicated; disconnecting",
-                LogLevel::Error);
-            Close();
-            return;
-        }
-        {
-            std::lock_guard lock(writeStateMutex);
-            writerThreadHandle = duplicatedThread;
-        }
-        writeStateCv.notify_all();
-
         for (;;) {
             Bytes frame;
             {
@@ -201,9 +192,9 @@ private:
     void WatchdogLoop() {
         std::unique_lock lock(writeStateMutex);
         while (!closed.load()) {
-            if (!writerThreadHandle || !writeInProgress) {
+            if (!writeInProgress) {
                 writeStateCv.wait(lock, [this] {
-                    return closed.load() || (writerThreadHandle && writeInProgress);
+                    return closed.load() || writeInProgress;
                 });
                 continue;
             }
@@ -213,11 +204,9 @@ private:
                 })) continue;
             if (closed.load() || !writeInProgress) continue;
 
-            // Keep writeStateMutex while cancelling. SenderLoop cannot mark
-            // this write complete or start another one until cancellation is
-            // targeted at the same operation.
+            // Keep writeStateMutex while cancelling so this targets the
+            // current write, not a subsequent frame.
             writeTimedOut.store(true);
-            CancelSynchronousIo(writerThreadHandle);
             CancelIoEx(pipe, nullptr);
             writeStateCv.wait(lock, [this] {
                 return closed.load() || !writeInProgress;
@@ -239,13 +228,13 @@ private:
     std::thread watchdogThread;
     std::mutex writeStateMutex;
     std::condition_variable writeStateCv;
-    HANDLE writerThreadHandle = nullptr;
     std::chrono::steady_clock::time_point writeDeadline{};
     bool writeInProgress = false;
     std::atomic_bool writeTimedOut = false;
 };
 
-RpcServer::RpcServer(RpcHandlers handlers) : handlers_(std::move(handlers)) {}
+RpcServer::RpcServer(RpcHandlers handlers, std::wstring pipeName)
+    : handlers_(std::move(handlers)), pipeName_(std::move(pipeName)) {}
 RpcServer::~RpcServer() { Stop(); }
 
 HANDLE RpcServer::CreatePipe() const {
@@ -254,7 +243,7 @@ HANDLE RpcServer::CreatePipe() const {
     if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
             L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;AU)", SDDL_REVISION_1,
             &descriptor, nullptr)) attributes.lpSecurityDescriptor = descriptor;
-    auto pipe = CreateNamedPipeW(kPipeName, PIPE_ACCESS_DUPLEX,
+    auto pipe = CreateNamedPipeW(pipeName_.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES,
         kMaxFrame + sizeof(FrameHeader), kMaxFrame + sizeof(FrameHeader), 1000,
         &attributes);
@@ -283,7 +272,7 @@ bool RpcServer::Start() {
     }
     CloseHandle(initialPipe);
     acceptThread_ = std::thread(&RpcServer::AcceptLoop, this);
-    LogMessage(L"Axonkey protobuf RPC endpoint started: " + std::wstring(kPipeName));
+    LogMessage(L"Axonkey protobuf RPC endpoint started: " + pipeName_);
     return true;
 }
 
@@ -291,10 +280,6 @@ void RpcServer::Stop() {
     if (!acceptThread_.joinable()) return;
     stopping_.store(true);
     if (stopEvent_) SetEvent(stopEvent_);
-    // Connect once to wake a synchronous ConnectNamedPipe call.
-    auto wake = CreateFileW(kPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-        OPEN_EXISTING, 0, nullptr);
-    if (wake != INVALID_HANDLE_VALUE) CloseHandle(wake);
     if (acceptThread_.joinable()) acceptThread_.join();
     std::vector<std::shared_ptr<Client>> clients;
     {
@@ -322,8 +307,35 @@ void RpcServer::AcceptLoop() {
             LogMessage(L"Creating Axonkey RPC named pipe failed; Win32=" + std::to_wstring(GetLastError()), LogLevel::Error);
             break;
         }
-        auto connected = ConnectNamedPipe(pipe, nullptr) != FALSE || GetLastError() == ERROR_PIPE_CONNECTED;
+        auto event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!event) {
+            CloseHandle(pipe);
+            pipe = INVALID_HANDLE_VALUE;
+            break;
+        }
+        OVERLAPPED operation{};
+        operation.hEvent = event;
+        bool connected = ConnectNamedPipe(pipe, &operation) != FALSE;
+        DWORD error = connected ? ERROR_SUCCESS : GetLastError();
+        if (error == ERROR_PIPE_CONNECTED) connected = true;
+        if (error == ERROR_IO_PENDING) {
+            const HANDLE waits[] = {stopEvent_, event};
+            const auto wait = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+            if (wait == WAIT_OBJECT_0 + 1) {
+                DWORD transferred = 0;
+                connected = GetOverlappedResult(pipe, &operation, &transferred, FALSE) != FALSE;
+                if (!connected) error = GetLastError();
+            } else {
+                CancelIoEx(pipe, &operation);
+                DWORD transferred = 0;
+                GetOverlappedResult(pipe, &operation, &transferred, TRUE);
+                error = wait == WAIT_OBJECT_0 ? ERROR_OPERATION_ABORTED : GetLastError();
+            }
+        }
+        CloseHandle(event);
         if (!connected || stopping_.load()) {
+            if (!stopping_.load()) LogMessage(L"Accepting Axonkey RPC client failed; Win32=" +
+                std::to_wstring(error), LogLevel::Error);
             CloseHandle(pipe);
             pipe = INVALID_HANDLE_VALUE;
             break;
@@ -369,7 +381,7 @@ void RpcServer::RemoveClient(const std::shared_ptr<Client>& client) {
 
 void RpcServer::ClientLoop(const std::shared_ptr<Client>& client) {
     Bytes frame;
-    while (!stopping_.load() && ReadFrame(client->pipe, frame)) {
+    while (!stopping_.load() && !client->closed.load() && ReadFrame(client->pipe, frame)) {
         axonkey::rpc::Request request;
         if (!axonkey::rpc::Parse(frame, request)) break;
         axonkey::rpc::Response response;
