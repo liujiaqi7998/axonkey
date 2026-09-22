@@ -1,57 +1,77 @@
 # Windows 输入
 
-Axonkey 在 Windows 11 x64 上使用 Interception 1.0.1 处理 RC003 按键映射。
-首次使用时通过应用引导安装驱动并重启 Windows，之后修改映射无需重启。
+Windows 版通过 Quarbor HID 过滤驱动和 AxonkeyService 接入 RC003。服务按
+`VID_2717`/`PID_32B8` 识别目标设备，读取完整的原始 HID report，并在驱动层屏蔽
+该设备送往 Windows 的原始输入。桌面端不再加载第三方键盘过滤库，也不直接读取
+键盘类设备。
 
 ## 输入链路
 
-Rust 后端通过 `libloading` 加载随应用提供的 x64 `interception.dll`，按硬件 ID
-匹配小米 RC003（`VID_2717&PID_32B8`），只为目标设备设置输入过滤条件。
-按键事件经过单击、双击和长按状态机处理，再从同一设备发送映射后的输入。
-普通键盘不进入 RC003 映射流程。
-
-Windows 通过 Interception 过滤 RC003 的硬件 ID（`VID_2717&PID_32B8`），
-并将匹配到的扫描码交给单击、双击、长按和行为序列状态机。普通键盘不会进入
-RC003 映射流程。当前 Windows 输入服务支持 Interception 能够提供扫描码的按键；
-无法由系统转换为扫描码的返回和独立音量 usage 不会被映射。
-
-双击、长按和行为序列产生的模拟短按会保持 50 毫秒后松开，以兼容轮询键盘状态的
-软件。长按行为首次在持续按住 600 毫秒后触发，等待 350 毫秒后每 100 毫秒连续触发，
-松开按键即停止。只有单击映射时，按键仍跟随遥控器实际按住和松开的时机。
-
-关闭主窗口后，Axonkey 继续常驻系统托盘并处理映射。关闭“启用自定义按键功能”可
-恢复原按键行为；从托盘退出应用会释放 Interception context，停止处理自定义映射。
-
-## 安装与语音
-
-Interception 的安装和卸载需要管理员权限及 Windows 重启。
-安装脚本在提权前校验随项目提供的安装器和运行库哈希。
-卸载输入驱动后，自定义按键映射需要重新安装驱动才能使用。
-
-RC003 语音由 AxonkeyService 的独立 Bluetooth GATT 链路处理。Axonkey
-客户端不再连接 Windows 音频服务，也不再维护 CPAL 到 CABLE 的转发。
-虚拟声卡由 Quarbor 驱动套件提供，按键映射和语音服务均不依赖 VB-CABLE。
-
-详细安装步骤见 [README](../README.md)，双平台实现见
-[架构说明](./ARCHITECTURE.md)，驱动来源与校验值见
-[Interception 来源说明](../vendor/interception/SOURCE.md)。
-
-## 故障排查
-
-若 RC003 断连后重新连接，Windows 显示设备正常但所有按键都无响应，
-可能遇到了 Interception 的设备重新枚举问题。退出 Axonkey 释放的是用户态
-context，无法修复已经异常的内核驱动状态。
-原因、原始 issue 和恢复步骤见 [Interception 重连问题说明](./INTERCEPTION_HOTPLUG_INCIDENT.md)。
-
-## 返回键与音量键采集 Demo
-
-需要确定返回、音量加、音量减的实际 Windows 按键码时，可以运行独立的
-[按键码诊断 Demo](../tools/keycode-demo/README.md)：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\keycode-demo.ps1
+```text
+RC003 HID report
+  -> QuarborHIDFilterDriver
+  -> AxonkeyService Endpoint
+  -> \\.\pipe\AxonkeyService.v1 (KeyboardEvent)
+  -> Windows report parser (HID usage set)
+  -> click/double-click/long-press state machine
+  -> SendInput behavior output
 ```
 
-Demo 同时记录 Interception 原始扫描码、Raw Input、HID 报告、全局键盘事件和窗口媒体命令，
-并标注设备来源与实时采集状态。Interception 通道仅过滤 RC003，收到的事件立即原样转发。
-从托盘退出 Axonkey 后，按窗口提示分三组采集；日志自动保存在本机，便于后续兼容分析。
+AxonkeyService 在端点上开启数据转发和输入屏蔽。每个 report 通过命名管道的
+`KeyboardEvent` 事件发送给桌面端：事件外层 `Event.type` 为 `keyboard`，其
+`Event.payload` 是 `KeyboardEvent` protobuf，包含 `device_instance_id`、原始
+`report` 字节和时间戳；endpoint 停止时 `report` 为空，表示该设备的 reset。管道帧格式是小端 `uint32` 长度后跟 protobuf 数据；连接、
+订阅和事件顺序见 [服务架构说明](../windows/service/SERVICE_ARCHITECTURE.md)。
+
+桌面端订阅 `SubscribeRequest.keyboard=true` 后解析 report，不执行扫描码查找，
+也不把收到的 report 回送设备。RC003 的键盘 report 使用 Report ID 1 和小端
+16-bit HID usage 槽位；解析器同时兼容驱动协议定义的无编号 Report ID 0，按当前
+report 的按下集合计算按下/释放边沿，未知 usage 会安全忽略。服务已经完成 RC003
+设备发现、挂载和原始 HID 报告转发，前置的按键接收、硬件槽位探测、过滤器设置和
+同设备发送逻辑不再属于桌面端。HID
+错误/滚键标记 `0x01`–`0x03` 会使当前 report 被丢弃并释放桌面端输出。
+
+以下额外 usage 由当前驱动直接转发并可进入相同的行为状态机：
+
+| HID usage page 0x07 | RC003 按键 |
+| --- | --- |
+| `0xF1` | 返回 |
+| `0x80` | 音量加 |
+| `0x81` | 音量减 |
+
+单击、双击、长按和行为序列仍按现有设置执行。模拟短按保持 50 毫秒；长按在持续
+按住 600 毫秒后触发，随后按固定间隔重复，释放时清理所有仍按下的输出。
+
+## 服务和驱动
+
+首次使用时安装 Quarbor HID 过滤驱动、虚拟声卡驱动和 AxonkeyService。桌面端可在
+设置页管理服务；开发环境也可使用：
+
+```powershell
+cmake -S windows/service -B .build/service
+cmake --build .build/service --config Release
+powershell -ExecutionPolicy Bypass -File .\scripts\manage-windows-service.ps1 -Action Install -ServiceExecutable .\windows\service\dist\AxonkeyService.exe
+powershell -ExecutionPolicy Bypass -File .\scripts\manage-windows-service.ps1 -Action Start
+```
+
+服务未运行、管道不可用或设备尚未挂载时，输入服务会报告连接错误并自动重试。确认
+`AxonkeyService` 正在运行、`GetServiceInfo` 返回协议 `axonkey.service.v1`，并且
+`GetDevices` 中目标设备的 `driver_mounted`、`input_blocked` 和
+`data_forward_enabled` 均为 `true`。
+
+修改映射只替换桌面端的设置快照，不需要重启应用或重新安装驱动。未启用自定义行为
+时，桌面端仍消费并解析键盘事件，再通过 `SendInput` 重放对应的系统虚拟键，避免
+服务屏蔽原始输入后按键失效；配置了自定义行为时才交给 `execute_behaviors` 执行。
+服务仍可保持运行以提供设备状态和语音通道。
+
+## 诊断
+
+如需查看 Windows HID 到 i8042 扫描码的系统转换，可运行只读脚本：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-rc003-hid-usages.ps1
+```
+
+该脚本只调用 Windows `HidP_TranslateUsagesToI8042ScanCodes` 并打印转换结果，
+不会安装驱动、修改过滤器或注入按键。它不能替代 AxonkeyService 的真实 report
+事件；排查映射时应优先查看服务日志和桌面端的 `keyboard` 事件日志。

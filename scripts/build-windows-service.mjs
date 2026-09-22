@@ -32,7 +32,8 @@ function msvcEnvironment() {
     throw new Error('Building AxonkeyService requires Visual Studio C++ build tools and the Windows SDK.')
   }
 
-  const devCommand = join(installation.stdout.trim(), 'Common7/Tools/VsDevCmd.bat')
+  const installationPath = installation.stdout.trim()
+  const devCommand = join(installationPath, 'Common7/Tools/VsDevCmd.bat')
   const environment = spawnSync(process.env.ComSpec || 'cmd.exe', [
     '/d', '/s', '/c', `""${devCommand}" -no_logo -arch=x64 -host_arch=x64 >nul && set"`,
   ], { cwd: root, encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: true })
@@ -45,29 +46,41 @@ function msvcEnvironment() {
   }
   env.CC = 'cl.exe'
   env.CXX = 'cl.exe'
-  return env
+  const cmakeBin = join(installationPath, 'Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin')
+  const ninjaBin = join(installationPath, 'Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja')
+  const cmake = join(cmakeBin, 'cmake.exe')
+  const ninja = join(ninjaBin, 'ninja.exe')
+  if (!existsSync(cmake) || !existsSync(ninja)) {
+    throw new Error('Visual Studio CMake and Ninja components are required to build AxonkeyService.')
+  }
+  env.Path = `${cmakeBin};${ninjaBin};${env.Path || ''}`
+  return { env, cmake, ninja }
 }
 
 try {
-  const env = msvcEnvironment()
+  const { env, cmake, ninja } = msvcEnvironment()
   const serviceBuildDirectory = join(root, '.build/service')
   const cachePath = join(serviceBuildDirectory, 'CMakeCache.txt')
+  const normalizedNinja = ninja.replaceAll('\\', '/').toLowerCase()
   if (existsSync(cachePath)) {
     const cache = readFileSync(cachePath, 'utf8')
     const compiler = cache.match(/^CMAKE_CXX_COMPILER:FILEPATH=(.+)$/m)?.[1]?.trim().toLowerCase()
+    const makeProgram = cache.match(/^CMAKE_MAKE_PROGRAM:FILEPATH=(.+)$/m)?.[1]?.trim().replaceAll('\\', '/').toLowerCase()
     // A previous configure can leave a MinGW compiler in the Ninja cache even
     // after the MSVC environment has been initialized. It produces an EXE
     // that needs libgcc/libstdc++ DLLs, which are not shipped with the app.
-    if (!compiler || !compiler.endsWith('cl.exe')) rmSync(serviceBuildDirectory, { recursive: true, force: true })
+    if (!compiler || !compiler.endsWith('cl.exe') || makeProgram !== normalizedNinja) {
+      rmSync(serviceBuildDirectory, { recursive: true, force: true })
+    }
   }
   // Keep the configure command aligned with the documented Windows service
   // build: cmake -S windows/service -B .build/service -G Ninja -DCMAKE_BUILD_TYPE=Release
   // CMake writes the Release executable into windows/service/dist.
-  run('cmake', ['-S', 'windows/service', '-B', '.build/service', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release'], env)
+  run(cmake, ['-S', 'windows/service', '-B', '.build/service', '-G', 'Ninja', `-DCMAKE_MAKE_PROGRAM=${ninja}`, '-DCMAKE_BUILD_TYPE=Release'], env)
   const configuredCache = readFileSync(cachePath, 'utf8')
   const configuredCompiler = configuredCache.match(/^CMAKE_CXX_COMPILER:FILEPATH=(.+)$/m)?.[1]?.trim().toLowerCase()
   if (!configuredCompiler?.endsWith('cl.exe')) throw new Error(`AxonkeyService must be built with MSVC; configured compiler: ${configuredCompiler || 'unknown'}`)
-  run('cmake', ['--build', '.build/service', '--config', 'Release', '--target', 'AxonkeyService'], env)
+  run(cmake, ['--build', '.build/service', '--config', 'Release', '--target', 'AxonkeyService'], env)
   const executable = join(root, 'windows/service/dist/AxonkeyService.exe')
   if (!existsSync(executable)) throw new Error(`The service build did not produce ${executable}.`)
 } catch (error) {

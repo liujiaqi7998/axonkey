@@ -33,9 +33,10 @@ local utility rather than a general keyboard automation platform.
 - Show device connection, battery, permissions, and driver status, with setup
   actions and access to local runtime logs.
 
-Windows only exposes keys that Interception translates into RC003 scan codes.
-macOS uses its native HID backend and can expose the full RC003 button set,
-including the raw Back and Volume +/- usages.
+Windows receives the complete RC003 HID report from AxonkeyService and parses the
+usage set in the desktop client, including raw Back (`0xF1`) and Volume +/-
+(`0x80`/`0x81`) usages. macOS uses its native HID backend and exposes the same
+full RC003 button set.
 
 ## Defaults
 

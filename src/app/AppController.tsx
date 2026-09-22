@@ -107,9 +107,7 @@ function AppController() {
   const nativeRuntime = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
   const [initialUiState] = useState<StoredUiState>(getStoredUiState)
   const [platform, setPlatform] = useState<Platform>(detectBrowserPlatform)
-  const editableButtons = platform === 'windows'
-    ? buttons.filter((button) => !['back', 'volumeUp', 'volumeDown'].includes(button.id))
-    : buttons
+  const editableButtons = buttons
   const [selectedDeviceId, setSelectedDeviceId] = useState<DeviceId>(initialUiState.selectedDeviceId)
   const selectedDevice = devices.find((device) => device.id === selectedDeviceId)!
   const isMouse = selectedDevice.inputKind === 'mouse'

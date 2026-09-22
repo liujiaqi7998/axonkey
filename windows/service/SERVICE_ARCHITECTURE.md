@@ -155,6 +155,10 @@ sequenceDiagram
 - `OnHidReport()` [`main.cpp:182`](main.cpp#L182)：只做复制和回调，不解析 usage；回调最终进入 `RpcServer::PublishKeyboard()`。
 - `Stop()` [`main.cpp:117`](main.cpp#L117)：先发停止信号、等待读线程，再关闭拦截/转发开关和句柄。
 
+读线程因设备移除、I/O 错误或服务停止而退出时，会发布一个 `KeyboardEvent` 空
+`report` 作为该端点的 reset 通知。桌面端收到后释放当前合成输出；管道连接无需
+断开，下一次设备协调即可继续发布新的完整 report。
+
 因此，当前服务的输入策略是“原始报告上送 RPC + 驱动层全部拦截”。桌面端可以解析报告，
 但服务本身不负责把报告重新注入 Windows 输入栈。
 

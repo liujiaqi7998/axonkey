@@ -12,7 +12,7 @@
 
 Axonkey 是一款支持小米蓝牙遥控器2Pro(RC003) 和鼠标输入的本地映射控制台。macOS 版通过 IOKit 读取目标设备（`VID 0x2717` / `PID 0x32B8`）的原始 HID 报告，并用 CoreGraphics 与 AppKit 发送映射后的输入；Windows 版通过 Quarbor HID 驱动过滤目标设备输入，RC003 语音由 AxonkeyService 负责。
 
-设备与触发项独立于映射行为：可以在“映射”左侧切换小米遥控器和鼠标，并分别配置快捷键控制。Axonkey 不依赖 AutoHotkey、AutoHotInterception 或 Karabiner-Elements，配置和诊断数据均保存在本机。
+设备与触发项独立于映射行为：可以在“映射”左侧切换小米遥控器和鼠标，并分别配置快捷键控制。Axonkey 不依赖第三方键盘拦截工具或 Karabiner-Elements，配置和诊断数据均保存在本机。
 
 ## 界面截图
 
@@ -43,7 +43,7 @@ Axonkey 是一款支持小米蓝牙遥控器2Pro(RC003) 和鼠标输入的本地
 - 识别 RC003 的连接状态与输入后端状态；Windows 和 macOS 版同时读取电量。
 - 为每个可识别按键分别配置单击、双击和长按行为。
 - 支持鼠标左右键边缘映射与四向滚动映射，可调灵敏度、忽略滚动加速、分轴触发间隔和按键保持时间。
-- Windows 的返回与音量键增强位于“按键映射 → 高级选项”，默认关闭，由用户阅读兼容性说明后自行选择。
+- Windows 的返回与音量键由 AxonkeyService 转发原始 HID usage，和其他 RC003 按键使用同一套映射行为。
 - 直接选择常用行为，包括保留原按键、禁用、导航编辑和媒体控制。
 - 支持单个按键、键盘录入、组合键和单独修饰键；macOS 界面会按系统习惯显示 Command 与 Option。
 - 支持按顺序执行多个步骤，例如粘贴文本、等待和按下 Enter。
@@ -51,16 +51,16 @@ Axonkey 是一款支持小米蓝牙遥控器2Pro(RC003) 和鼠标输入的本地
 - 支持将完整映射导出为 JSON、重新导入或恢复默认映射。
 - macOS 客户端可调节 RC003 语音输入增益（`-30 dB` 至 `+30 dB`）并输出到 `MiRemoteV 2ch`；Windows 语音通道由 AxonkeyService 管理。
 - 修改后自动保存并立即应用，无需为普通映射变更重启应用或系统。
-- 基础输入通道按 VID/PID 匹配 RC003；Windows 可选增强通道的共享宿主识别限制见下文。
+- 基础输入通道按 VID/PID 匹配 RC003；Windows 的完整 HID report 通过 AxonkeyService 命名管道送入映射流程。
 - Windows 首次引导可通过 Quarbor 安装器安装并检查 HID 拦截驱动与虚拟声卡；macOS 引导可完成系统权限、安装 MiRemoteV 2ch 虚拟麦克风并连接设备。
 - macOS 授权时提供置顶小窗，可直接打开对应设置、在 Finder 中定位当前 `Axonkey.app` 并重新检测权限。
 - 关闭主窗口后继续常驻 Windows 系统托盘或 macOS 菜单栏，可从托盘菜单重新显示或完全退出。
 
 ## 支持范围与限制
 
-当前支持小米 RC003 蓝牙遥控器和系统鼠标的左右键、四向滚动。macOS 可以配置全部 13 个已识别实体按键；Windows 配置 Interception 能够提供扫描码的按键。长按行为首次在持续按住 600 毫秒后触发，稍作等待后会按固定节奏连续触发，松开按键即停止。
+当前支持小米 RC003 蓝牙遥控器和系统鼠标的左右键、四向滚动。Windows 和 macOS 均可配置全部 13 个已识别实体按键。Windows 通过 AxonkeyService 接收完整 HID report；返回 usage `0xF1`、音量加 `0x80`、音量减 `0x81` 也会进入映射流程。长按行为首次在持续按住 600 毫秒后触发，稍作等待后会按固定节奏连续触发，松开按键即停止。
 
-Windows 无法由系统转换为扫描码的返回和独立音量 `+ / -` usage 不会进入映射流程。技术依据和限制见 [Windows 输入](./docs/WINDOWS_INPUT.md)。
+Windows 的原始 report 解析、服务连接和驱动状态说明见 [Windows 输入](./docs/WINDOWS_INPUT.md)。
 
 以下功能不在项目支持范围内：
 
@@ -79,7 +79,7 @@ Windows 无法由系统转换为扫描码的返回和独立音量 `+ / -` usage 
 
 四向滚动在三个屏幕边缘均可配置；左右方向需要水平滚轮或横向滚动手势。映射可复用按键、组合键、媒体控制、文本和多步骤序列。自定义输出的滚轮和鼠标点击不会再次触发映射。
 
-Windows 使用独立的系统鼠标监听与 SendInput，不需要连接 RC003 或安装 Interception；macOS 使用独立的 Quartz 事件监听，需要输入监控和辅助功能权限。这里的“鼠标”代表系统鼠标输入，多个鼠标共用这组映射。
+Windows 使用独立的系统鼠标监听与 SendInput，不需要连接 RC003 或 AxonkeyService；macOS 使用独立的 Quartz 事件监听，需要输入监控和辅助功能权限。这里的“鼠标”代表系统鼠标输入，多个鼠标共用这组映射。
 
 映射修改自动保存；导入／导出包含所有设备，兼容旧版 RC003 配置和已有边缘滚动配置；“恢复默认”只重置当前设备。鼠标初始所有输入均保持原始行为，具体映射由用户自行配置。
 
@@ -117,7 +117,7 @@ Windows 使用独立的系统鼠标监听与 SendInput，不需要连接 RC003 �
 | 平台 | 按键输入 | 可配置按键 | RC003 语音 | 当前结论 |
 | --- | --- | ---: | --- | --- |
 | macOS 13+ | IOKit 原始 HID + CoreGraphics / AppKit | 13 | ATVV -> IMA ADPCM -> `MiRemoteV 2ch` | 支持按键映射与语音；需要输入监控与辅助功能权限 |
-| Windows 11 x64 | Quarbor HID 拦截驱动 | 扫描码按键 | AxonkeyService 负责 RC003 语音 | 映射和虚拟声卡由 Quarbor 驱动套件提供 |
+| Windows 11 x64 | Quarbor HID + AxonkeyService `KeyboardEvent` | HID usage 报告 | AxonkeyService 负责 RC003 语音 | 映射和虚拟声卡由 Quarbor 驱动套件提供 |
 
 ### Windows
 
@@ -127,7 +127,7 @@ Windows 使用独立的系统鼠标监听与 SendInput，不需要连接 RC003 �
 - AxonkeyService（负责 Windows RC003 语音通道）；
 - 首次安装或卸载上述驱动时需要管理员权限，并需要重启 Windows 一次。
 
-Axonkey 使用 x64 `interception.dll`，因此不支持 32 位 Windows。输入服务按硬件 ID 只为 RC003 设置过滤条件。
+Axonkey 的 Windows 输入端通过 AxonkeyService 的 `\\.\pipe\AxonkeyService.v1` 接收 RC003 `KeyboardEvent`，桌面端解析完整 HID 报告后执行现有行为映射。当前发布包仅支持 x64 Windows。
 
 ### macOS
 
@@ -150,13 +150,7 @@ macOS 按键映射不需要安装输入驱动。未启用自定义映射，或�
 
 Quarbor 驱动套件只需安装一次。之后添加、删除或修改映射不需要再次重启。
 
-从源码目录或解压后的发行目录也可以手动运行安装脚本：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install-driver.ps1
-```
-
-脚本会校验随项目提供的 Interception 安装程序和运行库，说明系统变更，要求输入 `INSTALL` 确认，然后申请管理员权限。
+从源码目录运行时，可使用 `scripts\manage-windows-service.ps1` 检查或管理 AxonkeyService；Quarbor HID 驱动和服务安装由发行包安装器完成。桌面端只连接已运行的服务管道，不再携带或加载第三方键盘拦截运行库。
 
 Windows 客户端不再连接 RC003 的 Bluetooth GATT 音频服务，也不再维护 CPAL 到 CABLE 的转发链路。Windows 语音连接、解码和虚拟声卡输出由 AxonkeyService 负责。
 
@@ -186,15 +180,9 @@ Windows 客户端不再连接 RC003 的 Bluetooth GATT 音频服务，也不再�
 
 应用能够启动后，仍需在“隐私与安全性 -> 输入监控”和“隐私与安全性 -> 辅助功能”中分别添加当前“应用程序/Axonkey.app”并打开开关。若升级后界面再次显示“需要重新授权”，先移除列表中的旧 Axonkey，再通过 Finder 重新添加当前版本；证书信任不能替代这两项 TCC 权限。自签名证书丢失或被重新生成后，macOS 也会将后续构建视为新的应用身份，因此发布者必须长期保留同一套证书和私钥。
 
-## 卸载输入驱动
+## 卸载 Windows 输入组件
 
-先退出 Axonkey 和其他使用 Interception 的工具，再运行：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\uninstall-driver.ps1
-```
-
-脚本要求输入 `UNINSTALL` 并申请管理员权限。卸载完成后需要重启 Windows。
+退出 Axonkey 后，使用 Quarbor 安装器卸载 HID 驱动，并使用 AxonkeyService 安装器提供的卸载入口移除服务。卸载或更新驱动后按安装器提示重启 Windows；桌面端仓库不再提供独立的键盘拦截驱动卸载脚本。
 
 ## 本地开发
 
@@ -280,13 +268,13 @@ src-tauri/target/release/bundle/dmg/Axonkey_<version>_<arch>.dmg
 ## 工作原理
 
 ```text
-Windows input: RC003 -> Interception -> 扫描码 -> 行为状态机 -> 同设备发送
+Windows input: RC003 -> Quarbor -> AxonkeyService KeyboardEvent -> HID usage 报告解析 -> 行为状态机 -> SendInput
 Windows voice: AxonkeyService -> RC003 Bluetooth GATT ATVV -> Quarbor virtual sound card
 macOS input:   RC003 -> IOHIDManager -> HID usage -> 行为状态机 -> CoreGraphics / AppKit 发送
 macOS voice:   RC003 -> CoreBluetooth ATVV -> IMA ADPCM -> PCM -> MiRemoteV 2ch
 ```
 
-输入服务只为识别出的 RC003 设备设置过滤条件。设置更新采用本地快照，界面保存后会直接替换输入服务中的当前配置。
+AxonkeyService 负责 RC003 设备匹配和输入拦截；桌面端订阅 `KeyboardEvent` 后解析报告并将按键交给现有行为状态机。设置更新采用本地快照，界面保存后会直接替换输入服务中的当前配置。
 
 更多实现信息见 [架构说明](./docs/ARCHITECTURE.md)、[产品范围](./docs/PRODUCT.md) 和 [Windows 输入说明](./docs/WINDOWS_INPUT.md)。
 
@@ -315,28 +303,18 @@ macOS 同样常驻 INFO 级诊断，使用 `macOS RC003 audio diagnostics` 标�
 - 映射配置保存在本机应用数据中。
 - Windows 驱动安装和卸载日志位于 `%LOCALAPPDATA%\Axonkey\logs`。
 - macOS MiRemoteV 安装和卸载日志位于 `~/Library/Logs/Axonkey`。
-- Windows 中退出 Axonkey 会释放用户态 Interception context，停止处理自定义映射。
+- Windows 中退出 Axonkey 会关闭 AxonkeyService 管道订阅并停止处理自定义映射；服务本身按安装器配置继续运行。
 - macOS 中关闭主窗口不会退出应用；关闭自定义映射或从菜单栏选择“退出 Axonkey”后，HID 捕获与事件过滤才会停止。
 
-### Windows 断连后按键无响应
+### Windows 服务重连后按键无响应
 
-Interception 存在设备断开后重新连接可能无法输入的已知问题：RC003 在 Windows 中仍显示已连接，但按键没有响应，退出或重启 Axonkey 也可能无法恢复。原始报告见 [Interception issue #25](https://github.com/oblitum/Interception/issues/25)。
-
-问题涉及驱动对重新枚举设备的处理。上游 [issue #193](https://github.com/oblitum/Interception/issues/193) 将其归因于固定设备编号范围：反复断连、重连可能生成超出驱动支持范围的设备编号，即使是同一台设备也可能触发。Axonkey 只过滤 RC003 的用户态逻辑无法修复该内核驱动状态；这也不意味着每次重连都会失败。
-
-遇到该现象时，重启电脑即可。详细现象、原因和既有排查证据见 [Interception 重连问题说明](./docs/INTERCEPTION_HOTPLUG_INCIDENT.md)。
+如果 RC003 仍显示已连接但按键没有响应，先确认 AxonkeyService 正在运行，再检查 `\\.\pipe\AxonkeyService.v1` 是否可访问。服务会在设备重新枚举后重新发布 `KeyboardEvent`；必要时按服务安装器提示重启服务或 Windows。可用 `scripts/check-rc003-hid-usages.ps1` 读取原始 HID usage，确认 F1（`0xF1`）、音量+（`0x80`）和音量-（`0x81`）是否到达服务。
 
 ### 长时间说话时音频延迟
 
 长时间按住 RC003 语音键连续说话时，音频可能逐渐出现延迟。目前在 macOS 上观察到约 1.8～2 秒的延迟，松开语音键时还可能丢失末尾的一部分语音。
 
 此问题尚未解决，需要完整录制长段语音时请留意这一限制。已知现象、测量结果和排查进展见 [RC003 音频延迟说明](./docs/RC003_AUDIO_LATENCY.md)。
-
-## Interception 许可
-
-Interception 是独立的第三方组件，并采用双重许可。其上游许可允许在所列 LGPL 条款下进行非商业使用；商业分发需要向 Interception 作者取得单独授权。在取得相应许可前，请勿将包含 Interception 资源的 Axonkey 用于商业分发。
-
-具体版本、文件哈希、许可文本和上游链接见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) 与 [vendor/interception/SOURCE.md](./vendor/interception/SOURCE.md)。
 
 ## MiRemoteV 2ch 许可
 

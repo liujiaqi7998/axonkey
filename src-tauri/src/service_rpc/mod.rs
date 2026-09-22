@@ -1,13 +1,20 @@
 //! Windows named-pipe transport for AxonkeyService. The service uses nanopb;
 //! prost generates wire-compatible Rust types from the same schema.
 
-use std::{io, time::Duration};
+use std::{
+    io,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        OnceLock,
+    },
+    time::Duration,
+};
 
 use prost::Message;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::windows::named_pipe::ClientOptions,
-    sync::watch,
+    sync::{broadcast, watch},
 };
 
 use crate::audio_service::{AudioLevel, AudioServiceStatus};
@@ -22,6 +29,71 @@ const PROTOCOL_VERSION: &str = "axonkey.service.v1";
 const MAX_FRAME: usize = 1024 * 1024;
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const KEYBOARD_EVENT_CAPACITY: usize = 256;
+
+/// A keyboard report published by AxonkeyService.
+///
+/// The service sends the complete HID report, including its report-ID byte;
+/// the Windows input backend owns HID usage parsing. Keeping this wrapper
+/// independent of the generated prost type lets the backend consume events
+/// without depending on the private schema module. An empty report is an
+/// endpoint reset notification emitted when the service reader disconnects.
+/// `connection_generation` is local metadata, not part of the protobuf; it
+/// lets the desktop discard reports queued before a pipe reconnect.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyboardEvent {
+    pub device_instance_id: String,
+    pub report: Vec<u8>,
+    pub timestamp_ms: u64,
+    pub connection_generation: u64,
+}
+
+// The service connection is created after InputService during Tauri startup.
+// A process-wide sender lets the input worker subscribe before the connection
+// task begins, without opening a second pipe or changing platform startup
+// ordering. The bounded channel also prevents a stalled worker from growing
+// memory without limit; the worker handles Lagged by resetting its key state.
+static KEYBOARD_EVENTS: OnceLock<broadcast::Sender<KeyboardEvent>> = OnceLock::new();
+static KEYBOARD_CONNECTION_ACTIVE: AtomicBool = AtomicBool::new(false);
+static KEYBOARD_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn keyboard_sender() -> &'static broadcast::Sender<KeyboardEvent> {
+    KEYBOARD_EVENTS.get_or_init(|| {
+        let (sender, _receiver) = broadcast::channel(KEYBOARD_EVENT_CAPACITY);
+        sender
+    })
+}
+
+/// Subscribe to keyboard reports from the persistent AxonkeyService listener.
+///
+/// This is intentionally a non-blocking receiver API: the Windows input
+/// worker can use `try_recv` while checking its shutdown flag and processing
+/// gesture timers. Reports are delivered in service order for each receiver.
+pub fn subscribe_keyboard_events() -> broadcast::Receiver<KeyboardEvent> {
+    keyboard_sender().subscribe()
+}
+
+/// Returns whether the persistent Subscribe pipe currently accepts keyboard
+/// reports. The Windows input worker uses this edge to release held outputs
+/// when the service disconnects; a broadcast sender itself remains alive for
+/// the lifetime of the process.
+pub(crate) fn keyboard_connection_active() -> bool {
+    KEYBOARD_CONNECTION_ACTIVE.load(Ordering::Acquire)
+}
+
+/// Returns the monotonically increasing local connection generation. A worker
+/// can use this value to distinguish reports buffered before a reconnect from
+/// reports belonging to the current Subscribe session.
+pub(crate) fn keyboard_connection_generation() -> u64 {
+    KEYBOARD_CONNECTION_GENERATION.load(Ordering::Acquire)
+}
+
+fn set_keyboard_connection_active(active: bool) {
+    let previous = KEYBOARD_CONNECTION_ACTIVE.swap(active, Ordering::AcqRel);
+    if previous != active {
+        KEYBOARD_CONNECTION_GENERATION.fetch_add(1, Ordering::AcqRel);
+    }
+}
 
 #[derive(Clone, Debug)]
 enum ConnectionState {
@@ -83,6 +155,11 @@ pub struct ServiceConnection {
 
 impl ServiceConnection {
     pub fn start() -> Self {
+        // Initialize the keyboard broadcaster before spawning the listener so
+        // a report cannot be dropped solely because startup is concurrent
+        // with the input worker's receiver registration.
+        let _ = keyboard_sender();
+        set_keyboard_connection_active(false);
         let (sender, state) = watch::channel(ConnectionState::Disconnected { error: None });
         let (audio_sender, audio_level) = watch::channel(None);
         let (voice_sender, voice_status) = watch::channel(None);
@@ -234,7 +311,9 @@ impl ServiceConnection {
     }
 
     pub async fn get_devices(&self) -> Result<Vec<ServiceRpcDevice>, GetDevicesError> {
-        let mut pipe = open_pipe().await.map_err(GetDevicesError::ServiceUnavailable)?;
+        let mut pipe = open_pipe()
+            .await
+            .map_err(GetDevicesError::ServiceUnavailable)?;
         let devices: proto::DeviceList = tokio::time::timeout(
             PROBE_TIMEOUT,
             call(
@@ -287,6 +366,7 @@ fn status_from_state(state: &ConnectionState) -> ServiceRpcStatus {
 
 impl Drop for ServiceConnection {
     fn drop(&mut self) {
+        set_keyboard_connection_active(false);
         self.task.abort();
     }
 }
@@ -299,6 +379,7 @@ async fn run(
     let mut last_error = None;
     loop {
         let result = connect_and_monitor(&state, &audio_sender, &voice_sender).await;
+        set_keyboard_connection_active(false);
         if matches!(*state.borrow(), ConnectionState::Connected(_)) {
             last_error = None;
         }
@@ -336,11 +417,7 @@ async fn connect_and_monitor(
             &mut pipe,
             next_request_id(),
             "Subscribe",
-            &proto::SubscribeRequest {
-                keyboard: false,
-                audio_level: true,
-                voice_status: true,
-            },
+            &event_subscription(),
         ),
     )
     .await
@@ -356,10 +433,20 @@ async fn connect_and_monitor(
         ));
     }
 
+    set_keyboard_connection_active(true);
+
     loop {
         let frame = read_frame(&mut pipe).await?;
         let event = proto::Event::decode(frame.as_slice()).map_err(invalid_data)?;
         handle_event(event, audio_sender, voice_sender)?;
+    }
+}
+
+fn event_subscription() -> proto::SubscribeRequest {
+    proto::SubscribeRequest {
+        keyboard: true,
+        audio_level: true,
+        voice_status: true,
     }
 }
 
@@ -369,6 +456,19 @@ fn handle_event(
     voice_sender: &watch::Sender<Option<proto::VoiceStatus>>,
 ) -> io::Result<()> {
     match event.r#type.as_str() {
+        "keyboard" => {
+            let value =
+                proto::KeyboardEvent::decode(event.payload.as_slice()).map_err(invalid_data)?;
+            // A receiver may not exist during early startup or after the
+            // input worker has shut down. `send` then simply drops this event;
+            // the pipe listener must continue servicing audio/voice events.
+            let _ = keyboard_sender().send(KeyboardEvent {
+                device_instance_id: value.device_instance_id,
+                report: value.report,
+                timestamp_ms: value.timestamp_ms,
+                connection_generation: keyboard_connection_generation(),
+            });
+        }
         "audio_level" => {
             let level =
                 proto::AudioLevel::decode(event.payload.as_slice()).map_err(invalid_data)?;
@@ -596,6 +696,24 @@ mod tests {
     }
 
     #[test]
+    fn subscribes_to_keyboard_events_on_the_shared_pipe() {
+        let subscription = event_subscription();
+        assert!(subscription.keyboard);
+        assert!(subscription.audio_level);
+        assert!(subscription.voice_status);
+
+        let request = proto::Request {
+            request_id: 9,
+            method: "Subscribe".into(),
+            payload: subscription.encode_to_vec(),
+        };
+        let decoded = proto::SubscribeRequest::decode(request.payload.as_slice()).unwrap();
+        assert!(decoded.keyboard);
+        assert!(decoded.audio_level);
+        assert!(decoded.voice_status);
+    }
+
+    #[test]
     fn status_drops_service_info_after_disconnect() {
         let connected = status_from_state(&ConnectionState::Connected(test_info()));
         let value = serde_json::to_value(connected).unwrap();
@@ -721,6 +839,38 @@ mod tests {
             .borrow()
             .as_ref()
             .is_some_and(|value| !value.active));
+    }
+
+    #[test]
+    fn keyboard_event_is_decoded_and_broadcast_in_order() {
+        let mut receiver = subscribe_keyboard_events();
+        let (audio_sender, _audio_level) = watch::channel(None);
+        let (voice_sender, _voice_status) = watch::channel(None);
+        let report = vec![1, 0, 0, 0xf1, 0, 0x80, 0, 0x81, 0];
+
+        handle_event(
+            proto::Event {
+                r#type: "keyboard".into(),
+                payload: proto::KeyboardEvent {
+                    device_instance_id: "HID\\RC003".into(),
+                    report: report.clone(),
+                    timestamp_ms: 123,
+                }
+                .encode_to_vec(),
+            },
+            &audio_sender,
+            &voice_sender,
+        )
+        .unwrap();
+
+        let event = receiver.try_recv().unwrap();
+        assert_eq!(event.device_instance_id, "HID\\RC003");
+        assert_eq!(event.report, report);
+        assert_eq!(event.timestamp_ms, 123);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
     }
 
     #[test]

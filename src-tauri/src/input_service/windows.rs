@@ -1,167 +1,115 @@
+//! Windows input backend. The desktop process consumes complete HID reports
+//! from AxonkeyService over RPC; it does not open Bluetooth, HID, or raw filter
+//! device handles.
 use super::{InputServiceStatus, NativeBehavior, NativeSettings, TriggerBehaviors, WheelDirection};
+#[cfg(not(test))]
 use serde::Serialize;
 use std::{
-    collections::HashMap,
-    ffi::c_void,
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, AtomicI32, Ordering},
-        Arc, Mutex, OnceLock, RwLock,
-    },
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex, RwLock},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 #[cfg(not(test))]
 use tauri::Emitter;
 
-const MAX_KEYBOARD: i32 = 10;
-const FILTER_KEY_NONE: u16 = 0x0000;
-const FILTER_KEY_ALL: u16 = 0xffff;
-const KEY_UP: u16 = 0x0001;
-const KEY_E0: u16 = 0x0002;
-const WAIT_TIMEOUT_MS: u32 = 50;
+#[cfg(target_os = "windows")]
+type KeyboardEventReceiver = tokio::sync::broadcast::Receiver<crate::service_rpc::KeyboardEvent>;
+#[cfg(not(target_os = "windows"))]
+type KeyboardEventReceiver = ();
+
 const LONG_PRESS_MS: u64 = 600;
 const LONG_PRESS_REPEAT_INITIAL_MS: u64 = 350;
 const LONG_PRESS_REPEAT_INTERVAL_MS: u64 = 100;
 const DOUBLE_CLICK_MS: u64 = 350;
+const OUTPUT_TAP_DURATION: Duration = Duration::from_millis(50);
 const REPEAT_INITIAL_MS: u64 = 500;
 const REPEAT_INTERVAL_MS: u64 = 50;
-// Keep synthesized taps visible to applications that poll keyboard state.
-// Physical single-click holds already last until the remote's key-up.
-const OUTPUT_TAP_DURATION: Duration = Duration::from_millis(50);
-const DEVICE_DISCONNECT_GRACE: Duration = Duration::from_secs(8);
-const DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(250);
-const DEVICE_STABLE_DURATION: Duration = Duration::from_secs(3);
-const CR_SUCCESS: u32 = 0;
-const CM_GETIDLIST_FILTER_PRESENT: u32 = 0x0000_0100;
 
-type Context = *mut c_void;
-type DevicePredicate = unsafe extern "C" fn(i32) -> i32;
-type CreateContext = unsafe extern "C" fn() -> Context;
-type DestroyContext = unsafe extern "C" fn(Context);
-type SetFilter = unsafe extern "C" fn(Context, DevicePredicate, u16);
-type WaitWithTimeout = unsafe extern "C" fn(Context, u32) -> i32;
-type Receive = unsafe extern "C" fn(Context, i32, *mut KeyStroke, u32) -> i32;
-type Send = unsafe extern "C" fn(Context, i32, *const KeyStroke, u32) -> i32;
-type GetHardwareId = unsafe extern "C" fn(Context, i32, *mut u8, u32) -> u32;
-
-static FILTER_TARGET: AtomicI32 = AtomicI32::new(0);
-
-unsafe extern "C" fn selected_device(device: i32) -> i32 {
-    i32::from(device == FILTER_TARGET.load(Ordering::Relaxed))
+#[derive(Clone, Copy)]
+struct SourceKey {
+    id: &'static str,
+    usage: u16,
+    original_virtual_key: u16,
 }
-
-unsafe extern "C" fn keyboard_device(device: i32) -> i32 {
-    i32::from((1..=MAX_KEYBOARD).contains(&device))
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct KeyStroke {
-    code: u16,
-    state: u16,
-    information: u32,
-}
-
-struct InterceptionApi {
-    _library: libloading::Library,
-    create_context: CreateContext,
-    destroy_context: DestroyContext,
-    set_filter: SetFilter,
-    wait_with_timeout: WaitWithTimeout,
-    receive: Receive,
-    send: Send,
-    get_hardware_id: GetHardwareId,
-}
-
-impl InterceptionApi {
-    fn load() -> Result<Self, String> {
-        let mut failures = Vec::new();
-        for path in interception_dll_candidates() {
-            if !path.is_file() {
-                continue;
-            }
-            let library = match unsafe { libloading::Library::new(&path) } {
-                Ok(library) => library,
-                Err(error) => {
-                    failures.push(format!("{}: {error}", path.display()));
-                    continue;
-                }
-            };
-            let result = unsafe {
-                Ok(Self {
-                    create_context: load_symbol(&library, b"interception_create_context\0")?,
-                    destroy_context: load_symbol(&library, b"interception_destroy_context\0")?,
-                    set_filter: load_symbol(&library, b"interception_set_filter\0")?,
-                    wait_with_timeout: load_symbol(&library, b"interception_wait_with_timeout\0")?,
-                    receive: load_symbol(&library, b"interception_receive\0")?,
-                    send: load_symbol(&library, b"interception_send\0")?,
-                    get_hardware_id: load_symbol(&library, b"interception_get_hardware_id\0")?,
-                    _library: library,
-                })
-            };
-            return result.map_err(|error: String| format!("{}: {error}", path.display()));
-        }
-
-        let detail = if failures.is_empty() {
-            "interception.dll was not found".to_string()
-        } else {
-            failures.join("; ")
-        };
-        Err(detail)
-    }
-}
-
-unsafe fn load_symbol<T: Copy>(library: &libloading::Library, name: &[u8]) -> Result<T, String> {
-    library
-        .get::<T>(name)
-        .map(|symbol| *symbol)
-        .map_err(|error| error.to_string())
-}
-
-fn interception_dll_candidates() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Ok(current) = std::env::current_dir() {
-        roots.push(current.clone());
-        if let Some(parent) = current.parent() {
-            roots.push(parent.to_path_buf());
-        }
-    }
-    if let Ok(executable) = std::env::current_exe() {
-        if let Some(parent) = executable.parent() {
-            roots.push(parent.to_path_buf());
-            if let Some(grandparent) = parent.parent() {
-                roots.push(grandparent.to_path_buf());
-            }
-        }
-    }
-    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."));
-
-    let mut candidates = Vec::new();
-    for root in roots {
-        candidates.push(root.join("interception.dll"));
-        candidates.push(
-            root.join("vendor")
-                .join("interception")
-                .join("interception.dll"),
-        );
-        candidates.push(root.join("resources").join("interception.dll"));
-    }
-    candidates
-}
+const SOURCE_KEYS: [SourceKey; 13] = [
+    SourceKey {
+        id: "voice",
+        usage: 0x3e,
+        original_virtual_key: 0x74, // F5
+    },
+    SourceKey {
+        id: "power",
+        usage: 0x66,
+        original_virtual_key: 0x5e, // VK_POWER
+    },
+    SourceKey {
+        id: "home",
+        usage: 0x4a,
+        original_virtual_key: 0x24, // VK_HOME
+    },
+    SourceKey {
+        id: "tv",
+        usage: 0x35,
+        original_virtual_key: 0xc0, // VK_OEM_3
+    },
+    SourceKey {
+        id: "menu",
+        usage: 0x65,
+        original_virtual_key: 0x5d, // VK_APPS
+    },
+    SourceKey {
+        id: "confirm",
+        usage: 0x28,
+        original_virtual_key: 0x0d, // VK_RETURN
+    },
+    SourceKey {
+        id: "up",
+        usage: 0x52,
+        original_virtual_key: 0x26, // VK_UP
+    },
+    SourceKey {
+        id: "down",
+        usage: 0x51,
+        original_virtual_key: 0x28, // VK_DOWN
+    },
+    SourceKey {
+        id: "left",
+        usage: 0x50,
+        original_virtual_key: 0x25, // VK_LEFT
+    },
+    SourceKey {
+        id: "right",
+        usage: 0x4f,
+        original_virtual_key: 0x27, // VK_RIGHT
+    },
+    SourceKey {
+        id: "back",
+        usage: 0xf1,
+        original_virtual_key: 0xa6, // VK_BROWSER_BACK
+    },
+    SourceKey {
+        id: "volumeUp",
+        usage: 0x80,
+        original_virtual_key: 0xaf, // VK_VOLUME_UP
+    },
+    SourceKey {
+        id: "volumeDown",
+        usage: 0x81,
+        original_virtual_key: 0xae, // VK_VOLUME_DOWN
+    },
+];
 
 #[cfg(not(test))]
 type EventApp = tauri::AppHandle;
 #[cfg(test)]
 type EventApp = ();
-
 struct Shared {
     settings: RwLock<NativeSettings>,
     status: Mutex<InputServiceStatus>,
     event_app: RwLock<Option<EventApp>>,
-    stop: AtomicBool,
+    stop: std::sync::atomic::AtomicBool,
 }
-
 pub struct InputService {
     shared: Arc<Shared>,
     worker: Mutex<Option<JoinHandle<()>>>,
@@ -169,42 +117,33 @@ pub struct InputService {
 
 impl InputService {
     pub fn start() -> Self {
-        log::info!(target: "axonkey::input", "Starting Windows input service");
+        log::info!(target: "axonkey::input", "Starting Windows RPC input service");
+        #[cfg(target_os = "windows")]
+        let keyboard_events = crate::service_rpc::subscribe_keyboard_events();
+        #[cfg(not(target_os = "windows"))]
+        let keyboard_events = ();
         let shared = Arc::new(Shared {
             settings: RwLock::new(NativeSettings::default()),
             status: Mutex::new(InputServiceStatus::default()),
             event_app: RwLock::new(None),
-            stop: AtomicBool::new(false),
+            stop: std::sync::atomic::AtomicBool::new(false),
         });
         let worker_shared = Arc::clone(&shared);
         let worker = thread::Builder::new()
-            .name("Axonkey Interception input".into())
-            .spawn(move || worker_loop(worker_shared))
+            .name("Axonkey service keyboard input".into())
+            .spawn(move || worker_loop(worker_shared, keyboard_events))
             .ok();
         if worker.is_none() {
-            shared.status.lock().unwrap().error = Some("Cannot start the input worker".into());
-            log::error!(target: "axonkey::input", "Cannot start the Windows input worker thread");
+            shared.status.lock().unwrap().error =
+                Some("Cannot start the Windows RPC input worker".into());
         }
         Self {
             shared,
             worker: Mutex::new(worker),
         }
     }
-
     pub fn update_settings(&self, settings: NativeSettings) -> Result<(), String> {
         validate_settings(&settings)?;
-        let behavior_count = settings
-            .behaviors
-            .values()
-            .map(|triggers| {
-                triggers.click.len() + triggers.double_click.len() + triggers.long_press.len()
-            })
-            .sum::<usize>();
-        log::info!(
-            target: "axonkey::input",
-            "Input settings updated: enabled={}, behaviors={behavior_count}",
-            settings.enabled,
-        );
         *self
             .shared
             .settings
@@ -212,817 +151,583 @@ impl InputService {
             .map_err(|_| "Input settings lock is unavailable")? = settings;
         Ok(())
     }
-
     pub fn shutdown(&self) {
-        self.shared.stop.store(true, Ordering::Relaxed);
+        self.shared
+            .stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         if let Ok(mut worker) = self.worker.lock() {
             if let Some(worker) = worker.take() {
                 let _ = worker.join();
             }
         }
     }
-
     pub fn set_event_app(&self, app: tauri::AppHandle) {
         #[cfg(not(test))]
-        if let Ok(mut event_app) = self.shared.event_app.write() {
-            *event_app = Some(app);
+        if let Ok(mut target) = self.shared.event_app.write() {
+            *target = Some(app);
         }
         #[cfg(test)]
         let _ = app;
     }
-
     pub fn status(&self) -> InputServiceStatus {
         self.shared
             .status
             .lock()
-            .map(|status| status.clone())
+            .map(|s| s.clone())
             .unwrap_or_else(|_| InputServiceStatus {
                 error: Some("Input status lock is unavailable".into()),
-                ..InputServiceStatus::default()
+                ..Default::default()
             })
     }
 }
-
 impl Drop for InputService {
     fn drop(&mut self) {
         self.shutdown();
     }
 }
 
-#[derive(Clone, Copy)]
-struct SourceKey {
-    id: &'static str,
-    scan_code: u16,
-    extended: Option<bool>,
-    repeat_initial_ms: u64,
-    repeat_interval_ms: u64,
-}
-
-impl SourceKey {
-    const fn new(id: &'static str, scan_code: u16, extended: Option<bool>) -> Self {
-        Self {
-            id,
-            scan_code,
-            extended,
-            repeat_initial_ms: REPEAT_INITIAL_MS,
-            repeat_interval_ms: REPEAT_INTERVAL_MS,
+fn worker_loop(shared: Arc<Shared>, mut stream: KeyboardEventReceiver) {
+    #[cfg(target_os = "windows")]
+    {
+        let mut state = InputState::default();
+        let mut current_device: Option<String> = None;
+        let mut service_connected = crate::service_rpc::keyboard_connection_active();
+        let mut connection_generation = crate::service_rpc::keyboard_connection_generation();
+        set_status(
+            &shared,
+            false,
+            None,
+            service_connected,
+            (!service_connected).then_some("AxonkeyService 键盘事件流不可用".into()),
+        );
+        while !shared.stop.load(std::sync::atomic::Ordering::Relaxed) {
+            let current_generation = crate::service_rpc::keyboard_connection_generation();
+            let connection_active = crate::service_rpc::keyboard_connection_active();
+            if current_generation != connection_generation || connection_active != service_connected
+            {
+                connection_generation = current_generation;
+                service_connected = connection_active;
+                state.release_all_with_events(&shared);
+                current_device = None;
+                set_status(
+                    &shared,
+                    false,
+                    None,
+                    service_connected,
+                    (!service_connected).then_some("AxonkeyService 键盘事件流不可用".into()),
+                );
+            }
+            if !service_connected {
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            match stream.try_recv() {
+                Ok(event) => {
+                    if event.connection_generation < connection_generation {
+                        continue;
+                    }
+                    if event.connection_generation > connection_generation {
+                        connection_generation = event.connection_generation;
+                        service_connected = crate::service_rpc::keyboard_connection_active();
+                        state.release_all_with_events(&shared);
+                        current_device = None;
+                        set_status(
+                            &shared,
+                            false,
+                            None,
+                            service_connected,
+                            (!service_connected)
+                                .then_some("AxonkeyService 键盘事件流不可用".into()),
+                        );
+                        if !service_connected {
+                            continue;
+                        }
+                    }
+                    if !service_connected {
+                        continue;
+                    }
+                    if event.report.is_empty() {
+                        state.release_all_with_events(&shared);
+                        current_device = None;
+                        set_status(&shared, false, None, true, None);
+                        continue;
+                    }
+                    if current_device.as_deref() != Some(event.device_instance_id.as_str()) {
+                        state.release_all_with_events(&shared);
+                        current_device = Some(event.device_instance_id.clone());
+                    }
+                    set_status(&shared, true, Some(event.device_instance_id), true, None);
+                    if let Some(usages) = parse_hid_report(&event.report) {
+                        state.process_report(&shared, usages);
+                    } else {
+                        log::warn!(
+                            target: "axonkey::input",
+                            "Ignoring malformed AxonkeyService keyboard report and releasing active outputs"
+                        );
+                        state.release_all_with_events(&shared);
+                    }
+                    state.process_timers(&shared);
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    state.process_timers(&shared);
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    log::warn!(
+                        target: "axonkey::input",
+                        "Dropped {skipped} keyboard reports; resetting key state"
+                    );
+                    state.release_all_with_events(&shared);
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    state.release_all_with_events(&shared);
+                    current_device = None;
+                    service_connected = false;
+                    set_status(
+                        &shared,
+                        false,
+                        None,
+                        false,
+                        Some("AxonkeyService 键盘事件流已关闭".into()),
+                    );
+                    stream = crate::service_rpc::subscribe_keyboard_events();
+                }
+            }
         }
+        state.release_all_with_events(&shared);
+        set_status(&shared, false, None, false, None);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (shared, stream);
+        thread::park();
     }
 }
 
-const SOURCE_KEYS: [SourceKey; 10] = [
-    SourceKey::new("voice", 0x3f, Some(false)),
-    SourceKey::new("power", 0x5e, Some(true)),
-    SourceKey::new("home", 0x47, None),
-    SourceKey::new("tv", 0x29, None),
-    SourceKey::new("menu", 0x5d, None),
-    SourceKey::new("confirm", 0x1c, None),
-    SourceKey::new("up", 0x48, None),
-    SourceKey::new("down", 0x50, None),
-    SourceKey::new("left", 0x4b, None),
-    SourceKey::new("right", 0x4d, None),
-];
-
-fn source_for(stroke: KeyStroke) -> Option<SourceKey> {
-    let extended = stroke.state & KEY_E0 != 0;
-    SOURCE_KEYS.iter().copied().find(|source| {
-        source.scan_code == stroke.code
-            && source.extended.is_none_or(|expected| expected == extended)
-    })
+fn set_status(
+    shared: &Shared,
+    connected: bool,
+    hardware_id: Option<String>,
+    ready: bool,
+    error: Option<String>,
+) {
+    if let Ok(mut status) = shared.status.lock() {
+        status.backend_ready = ready;
+        status.device_connected = connected;
+        status.hardware_id = hardware_id;
+        status.capture_active = connected;
+        status.error = error;
+    }
 }
 
+fn parse_hid_report(report: &[u8]) -> Option<HashSet<u16>> {
+    if !matches!(report.first().copied(), Some(0 | 1)) {
+        return None;
+    }
+    let bytes = &report[1..];
+    if !bytes.len().is_multiple_of(2) {
+        return None;
+    }
+    let usages: HashSet<u16> = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .filter(|usage| *usage != 0)
+        .collect();
+    // HID keyboard usages 0x01..0x03 are rollover/error markers, not keys.
+    (!usages.iter().any(|usage| (1..=3).contains(usage))).then_some(usages)
+}
+fn source_for_usage(usage: u16) -> Option<SourceKey> {
+    SOURCE_KEYS
+        .iter()
+        .copied()
+        .find(|source| source.usage == usage)
+}
+
+#[derive(Default)]
+struct InputState {
+    active_usages: HashSet<u16>,
+    buttons: HashMap<&'static str, ButtonState>,
+}
 struct PressState {
-    wheel_repeat: Option<(i32, bool, Instant)>,
     started_at: Instant,
-    last_repeat_log: Instant,
-    next_repeat_at: Instant,
-    repeat_interval_ms: u64,
-    original: KeyStroke,
     long_fired: bool,
     long_repeat_due_at: Option<Instant>,
-    passthrough_long: bool,
-    held_outputs: Vec<KeyStroke>,
+    held_outputs: Vec<(u16, bool)>,
+    wheel_repeat: Option<(i32, bool)>,
+    next_repeat_at: Instant,
+    original_virtual_key: u16,
+    passthrough: bool,
 }
-
 struct PendingClick {
     due_at: Instant,
-    original: KeyStroke,
+    original_virtual_key: u16,
 }
-
 #[derive(Default)]
 struct ButtonState {
     pressed: Option<PressState>,
     pending_click: Option<PendingClick>,
 }
 
-fn worker_loop(shared: Arc<Shared>) {
-    let api = match InterceptionApi::load() {
-        Ok(api) => api,
-        Err(error) => {
-            log::error!(target: "axonkey::input", "Failed to load Interception backend: {error}");
-            shared.status.lock().unwrap().error = Some(error);
-            return;
+impl InputState {
+    fn process_report(&mut self, shared: &Shared, usages: HashSet<u16>) {
+        let mut pressed: Vec<_> = usages.difference(&self.active_usages).copied().collect();
+        let mut released: Vec<_> = self.active_usages.difference(&usages).copied().collect();
+        pressed.sort_unstable();
+        released.sort_unstable();
+        self.active_usages = usages;
+        for usage in pressed {
+            if let Some(source) = source_for_usage(usage) {
+                emit_remote_key(shared, source.id, true);
+                self.press_source(shared, source);
+            }
         }
-    };
-    log::info!(target: "axonkey::input", "Interception backend loaded");
-    {
-        let mut status = shared.status.lock().unwrap();
-        status.backend_ready = true;
-        status.error = None;
+        for usage in released {
+            if let Some(source) = source_for_usage(usage) {
+                emit_remote_key(shared, source.id, false);
+                self.release_source(shared, source);
+            }
+        }
     }
-
-    let mut last_target_seen_at = None;
-    while !shared.stop.load(Ordering::Relaxed) {
-        if !wait_for_stable_target(&shared, &mut last_target_seen_at) {
-            break;
-        }
-
-        let context = unsafe { (api.create_context)() };
-        if context.is_null() {
-            log::warn!(target: "axonkey::input", "Interception could not create an input context; retrying");
-            let mut status = shared.status.lock().unwrap();
-            status.backend_ready = false;
-            status.error = Some("Interception could not create an input context".into());
-            drop(status);
-            thread::sleep(DEVICE_POLL_INTERVAL);
-            continue;
-        }
-
-        {
-            let mut status = shared.status.lock().unwrap();
-            status.backend_ready = true;
-            status.error = None;
-        }
-
-        run_context(&api, context, &shared, &mut last_target_seen_at);
-        clear_keyboard_filters(&api, context);
-        unsafe { (api.destroy_context)(context) };
-    }
-}
-
-fn wait_for_stable_target(shared: &Shared, last_target_seen_at: &mut Option<Instant>) -> bool {
-    let mut stable_since = None;
-    while !shared.stop.load(Ordering::Relaxed) {
-        let now = Instant::now();
-        let hardware_id = rc003_keyboard_device_id();
-        let target_present = hardware_id.is_some();
-        update_device_status(shared, hardware_id, last_target_seen_at, now);
-
-        let mapping_enabled = shared
+    fn press_source(&mut self, shared: &Shared, source: SourceKey) {
+        let settings = shared
             .settings
             .read()
-            .map(|settings| settings.enabled)
-            .unwrap_or(false);
-        if target_present && mapping_enabled {
-            let first_stable = *stable_since.get_or_insert(now);
-            if now.saturating_duration_since(first_stable) >= DEVICE_STABLE_DURATION {
-                return true;
-            }
-        } else {
-            stable_since = None;
+            .map(|s| s.clone())
+            .unwrap_or_default();
+        let triggers = settings
+            .behaviors
+            .get(source.id)
+            .cloned()
+            .unwrap_or_default();
+        let state = self.buttons.entry(source.id).or_default();
+        if state.pressed.is_some() {
+            return;
         }
-
-        thread::sleep(DEVICE_POLL_INTERVAL);
-    }
-    false
-}
-
-fn run_context(
-    api: &InterceptionApi,
-    context: Context,
-    shared: &Shared,
-    last_target_seen_at: &mut Option<Instant>,
-) {
-    let mut target_device = 0;
-    let mut next_probe = Instant::now();
-    let mut button_states: HashMap<&'static str, ButtonState> = HashMap::new();
-    while !shared.stop.load(Ordering::Relaxed) {
         let now = Instant::now();
-        if now >= next_probe {
-            let mapping_enabled = shared
-                .settings
-                .read()
-                .map(|settings| settings.enabled)
-                .unwrap_or(false);
-            let hardware_id = rc003_keyboard_device_id();
-            update_device_status(shared, hardware_id.clone(), last_target_seen_at, now);
-            if !mapping_enabled || hardware_id.is_none() {
-                break;
-            }
-            let next_target = probe_devices(
-                api,
-                context,
-                target_device,
-                *last_target_seen_at,
-                now,
-                shared,
-            );
-            if next_target != 0 {
-                *last_target_seen_at = Some(now);
-            }
-            if next_target != target_device {
-                if target_device != 0 {
-                    release_all_held_outputs(api, context, target_device, &mut button_states);
+        if state
+            .pending_click
+            .as_ref()
+            .is_some_and(|p| now >= p.due_at)
+        {
+            if let Some(pending) = state.pending_click.take() {
+                if settings.enabled {
+                    execute_click_or_original(&triggers.click, pending.original_virtual_key);
+                } else {
+                    tap_original_key(pending.original_virtual_key);
                 }
-                button_states.clear();
             }
-            if next_target == 0 {
-                // Contexts keep fixed device handles; rebuild after hot removal or re-pairing.
-                break;
+        }
+        if !settings.enabled || !has_custom_behavior(&triggers) {
+            if let Some(pending) = state.pending_click.take() {
+                tap_original_key(pending.original_virtual_key);
             }
-            target_device = next_target;
-            next_probe = now + Duration::from_secs(1);
-        }
-        if target_device != 0 {
-            process_timers(api, context, target_device, shared, &mut button_states, now);
-        }
-
-        let wait_timeout_ms = WAIT_TIMEOUT_MS;
-        let device = unsafe { (api.wait_with_timeout)(context, wait_timeout_ms) };
-        if device <= 0 {
-            continue;
-        }
-        let mut stroke = KeyStroke::default();
-        if unsafe { (api.receive)(context, device, &mut stroke, 1) } != 1 {
-            continue;
-        }
-        if device != target_device {
-            unsafe { (api.send)(context, device, &stroke, 1) };
-            continue;
-        }
-        process_target_stroke(api, context, device, shared, &mut button_states, stroke);
-    }
-
-    if target_device != 0 {
-        release_all_held_outputs(api, context, target_device, &mut button_states);
-    }
-}
-
-fn probe_devices(
-    api: &InterceptionApi,
-    context: Context,
-    old_target: i32,
-    last_target_seen_at: Option<Instant>,
-    now: Instant,
-    shared: &Shared,
-) -> i32 {
-    let mut found = 0;
-    let mut found_id = None;
-    for device in 1..=MAX_KEYBOARD {
-        let ids = hardware_ids(api, context, device);
-        if is_target_hardware_id(&ids) {
-            found = device;
-            found_id = ids
-                .split('\0')
-                .find(|value| !value.trim().is_empty())
-                .map(str::trim)
-                .map(str::to_string);
-            break;
-        }
-    }
-
-    if old_target != found {
-        if old_target != 0 {
-            set_device_filter(api, context, old_target, FILTER_KEY_NONE);
-        }
-        if found != 0 {
-            set_device_filter(api, context, found, FILTER_KEY_ALL);
-        }
-    }
-    let mut status = shared.status.lock().unwrap();
-    status.backend_ready = true;
-    status.device_connected = device_connection_visible(found != 0, last_target_seen_at, now);
-    if found_id.is_some() || !status.device_connected {
-        status.hardware_id = found_id;
-    }
-    status.error = None;
-    found
-}
-
-fn device_connection_visible(found: bool, last_seen_at: Option<Instant>, now: Instant) -> bool {
-    found
-        || last_seen_at.is_some_and(|last_seen| {
-            now.saturating_duration_since(last_seen) < DEVICE_DISCONNECT_GRACE
-        })
-}
-
-fn update_device_status(
-    shared: &Shared,
-    hardware_id: Option<String>,
-    last_target_seen_at: &mut Option<Instant>,
-    now: Instant,
-) {
-    let found = hardware_id.is_some();
-    if found {
-        *last_target_seen_at = Some(now);
-    }
-    let connected = device_connection_visible(found, *last_target_seen_at, now);
-    let mut status = shared.status.lock().unwrap();
-    let previous_connected = status.device_connected;
-    status.backend_ready = true;
-    status.device_connected = connected;
-    if found || !connected {
-        status.hardware_id = hardware_id;
-    }
-    status.error = None;
-    if previous_connected != connected {
-        log::info!(target: "axonkey::input", "RC003 connection changed: connected={connected}");
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn rc003_keyboard_device_id() -> Option<String> {
-    for _ in 0..3 {
-        let mut length = 0;
-        if unsafe {
-            cm_get_device_id_list_size(&mut length, std::ptr::null(), CM_GETIDLIST_FILTER_PRESENT)
-        } != CR_SUCCESS
-            || !(2..=1_000_000).contains(&length)
-        {
-            return None;
-        }
-
-        let mut buffer = vec![0u16; length as usize];
-        if unsafe {
-            cm_get_device_id_list(
-                std::ptr::null(),
-                buffer.as_mut_ptr(),
-                length,
-                CM_GETIDLIST_FILTER_PRESENT,
-            )
-        } == CR_SUCCESS
-        {
-            return rc003_keyboard_id_from_multisz(&buffer);
-        }
-    }
-    None
-}
-
-#[cfg(not(target_os = "windows"))]
-fn rc003_keyboard_device_id() -> Option<String> {
-    None
-}
-
-fn rc003_keyboard_id_from_multisz(buffer: &[u16]) -> Option<String> {
-    buffer
-        .split(|value| *value == 0)
-        .take_while(|value| !value.is_empty())
-        .map(String::from_utf16_lossy)
-        .find(|value| {
-            value.to_ascii_uppercase().starts_with("HID\\") && is_target_hardware_id(value)
-        })
-}
-
-fn set_device_filter(api: &InterceptionApi, context: Context, device: i32, filter: u16) {
-    FILTER_TARGET.store(device, Ordering::Relaxed);
-    unsafe { (api.set_filter)(context, selected_device, filter) };
-}
-
-fn clear_keyboard_filters(api: &InterceptionApi, context: Context) {
-    FILTER_TARGET.store(0, Ordering::Relaxed);
-    unsafe { (api.set_filter)(context, keyboard_device, FILTER_KEY_NONE) };
-}
-
-fn hardware_ids(api: &InterceptionApi, context: Context, device: i32) -> String {
-    let mut buffer = [0u8; 2048];
-    let length =
-        unsafe { (api.get_hardware_id)(context, device, buffer.as_mut_ptr(), buffer.len() as u32) }
-            as usize;
-    if length < 2 || length > buffer.len() {
-        return String::new();
-    }
-    let words = buffer[..length]
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect::<Vec<_>>();
-    String::from_utf16_lossy(&words)
-}
-
-fn is_target_hardware_id(value: &str) -> bool {
-    let uppercase = value.to_ascii_uppercase();
-    let vid = uppercase.contains("VID_2717") || uppercase.contains("VID&012717");
-    let pid = uppercase.contains("PID_32B8") || uppercase.contains("PID&32B8");
-    vid && pid
-}
-
-fn process_target_stroke(
-    api: &InterceptionApi,
-    context: Context,
-    device: i32,
-    shared: &Shared,
-    states: &mut HashMap<&'static str, ButtonState>,
-    stroke: KeyStroke,
-) {
-    let Some(source) = source_for(stroke) else {
-        log::info!(target: "axonkey::input", "RC003 unrecognized key passthrough: device={device}, scan=0x{:04X}, state=0x{:04X}", stroke.code, stroke.state);
-        send_stroke(api, context, device, stroke);
-        return;
-    };
-    process_source_stroke(api, context, device, shared, states, stroke, source);
-}
-
-fn process_source_stroke(
-    api: &InterceptionApi,
-    context: Context,
-    device: i32,
-    shared: &Shared,
-    states: &mut HashMap<&'static str, ButtonState>,
-    stroke: KeyStroke,
-    source: SourceKey,
-) {
-    let key_up = stroke.state & KEY_UP != 0;
-    let (tracked_press, held_ms, should_log) = if let Some(press) = states
-        .get_mut(source.id)
-        .and_then(|state| state.pressed.as_mut())
-    {
-        let held_ms = press.started_at.elapsed().as_millis();
-        let should_log = key_up || press.last_repeat_log.elapsed() >= Duration::from_secs(1);
-        if should_log {
-            press.last_repeat_log = Instant::now();
-        }
-        (true, held_ms, should_log)
-    } else {
-        (false, 0, true)
-    };
-    if should_log {
-        log::info!(target: "axonkey::input", "RC003 key: device={device}, button={}, phase={}, scan=0x{:04X}, state=0x{:04X}, tracked_press={}, held_ms={}",
-            source.id, if key_up { "up" } else if tracked_press { "repeat" } else { "down" },
-            stroke.code, stroke.state, tracked_press, held_ms);
-    }
-    emit_remote_key_event(shared, source.id, !key_up);
-    let settings = shared
-        .settings
-        .read()
-        .map(|settings| settings.clone())
-        .unwrap_or_default();
-    let triggers = settings
-        .behaviors
-        .get(source.id)
-        .cloned()
-        .unwrap_or_default();
-    if !settings.enabled || !has_custom_behavior(&triggers) {
-        log::info!(target: "axonkey::input", "RC003 passthrough: button={}, mapping_enabled={}, custom_behavior={}", source.id, settings.enabled, has_custom_behavior(&triggers));
-        if let Some(state) = states.get_mut(source.id) {
-            if let Some(press) = state.pressed.take() {
-                release_chord(api, context, device, &press.held_outputs);
-            }
-            state.pending_click = None;
-        }
-        send_stroke(api, context, device, stroke);
-        return;
-    }
-
-    let state = states.entry(source.id).or_default();
-    if !key_up {
-        if let Some(press) = state.pressed.as_mut() {
-            // The timer owns wheel repeats, including remotes without repeat reports.
-            if press.wheel_repeat.is_some() {
-                return;
-            }
-            if press.last_repeat_log.elapsed() >= Duration::from_secs(1) {
-                log::info!(target: "axonkey::input", "RC003 repeat handling: button={}, held_outputs={}, passthrough_long={}, long_fired={}", source.id, press.held_outputs.len(), press.passthrough_long, press.long_fired);
-                press.last_repeat_log = Instant::now();
-            }
-            if !press.held_outputs.is_empty() {
-                // Repetition is driven by the timer below so report-polled and
-                // edge-only sources share the same cadence.
-                return;
-            } else if press.passthrough_long {
-                send_stroke(api, context, device, stroke);
-            } else if !has_enabled(&triggers.long_press)
-                && press.started_at.elapsed() >= Duration::from_millis(LONG_PRESS_MS)
-            {
-                send_original_down(api, context, device, press.original);
-                press.passthrough_long = true;
-                send_stroke(api, context, device, stroke);
-            }
-        } else {
-            let wheel_repeat = continuous_click_wheel(&triggers).map(|(delta, horizontal)| {
-                send_wheel_with_axis(delta, horizontal);
-                (
-                    delta,
-                    horizontal,
-                    Instant::now() + Duration::from_millis(400),
-                )
-            });
-            let held_outputs = continuous_click_chord(&triggers)
-                .map(|keys| {
-                    for behavior in triggers.click.iter().filter(|behavior| behavior.enabled()) {
-                        match behavior {
-                            NativeBehavior::Key { key, .. } => log::info!(target: "axonkey::input", "Mapped hold: button={}, key={key:?}", source.id),
-                            NativeBehavior::Shortcut { keys, .. } => log::info!(target: "axonkey::input", "Mapped hold: button={}, keys={keys:?}", source.id),
-                            _ => {}
-                        }
-                    }
-                    press_chord(api, context, device, &keys)
-                })
-                .unwrap_or_default();
+            send_original_key_down(source.original_virtual_key);
             state.pressed = Some(PressState {
-                wheel_repeat,
-                started_at: Instant::now(),
-                last_repeat_log: Instant::now(),
-                next_repeat_at: Instant::now() + Duration::from_millis(source.repeat_initial_ms),
-                repeat_interval_ms: source.repeat_interval_ms,
-                original: stroke,
+                started_at: now,
                 long_fired: false,
                 long_repeat_due_at: None,
-                passthrough_long: false,
-                held_outputs,
+                held_outputs: Vec::new(),
+                wheel_repeat: None,
+                next_repeat_at: now + Duration::from_millis(REPEAT_INITIAL_MS),
+                original_virtual_key: source.original_virtual_key,
+                passthrough: true,
             });
+            return;
         }
-        return;
+        let wheel_repeat = continuous_click_wheel(&triggers);
+        if let Some((delta, horizontal)) = wheel_repeat {
+            send_wheel_with_axis(delta, horizontal);
+        }
+        let held_outputs = continuous_click_chord(&triggers)
+            .map(|keys| press_chord(&keys))
+            .unwrap_or_default();
+        state.pressed = Some(PressState {
+            started_at: now,
+            long_fired: false,
+            long_repeat_due_at: None,
+            held_outputs,
+            wheel_repeat,
+            next_repeat_at: now
+                + Duration::from_millis(if wheel_repeat.is_some() {
+                    400
+                } else {
+                    REPEAT_INITIAL_MS
+                }),
+            original_virtual_key: source.original_virtual_key,
+            passthrough: false,
+        });
+    }
+    fn release_source(&mut self, shared: &Shared, source: SourceKey) {
+        let settings = shared
+            .settings
+            .read()
+            .map(|s| s.clone())
+            .unwrap_or_default();
+        let triggers = settings
+            .behaviors
+            .get(source.id)
+            .cloned()
+            .unwrap_or_default();
+        let Some(state) = self.buttons.get_mut(source.id) else {
+            return;
+        };
+        let Some(press) = state.pressed.take() else {
+            return;
+        };
+        if press.passthrough {
+            send_original_key_up(press.original_virtual_key);
+            return;
+        }
+        if press.wheel_repeat.is_some() {
+            return;
+        }
+        if !press.held_outputs.is_empty() {
+            release_chord(&press.held_outputs);
+            return;
+        }
+        if press.long_fired {
+            return;
+        }
+        if has_enabled(&triggers.long_press)
+            && press.started_at.elapsed() >= Duration::from_millis(LONG_PRESS_MS)
+        {
+            execute_behaviors(&triggers.long_press);
+            return;
+        }
+        if press.started_at.elapsed() >= Duration::from_millis(LONG_PRESS_MS) {
+            tap_original_key(press.original_virtual_key);
+            return;
+        }
+        if has_enabled(&triggers.double_click) {
+            if state.pending_click.take().is_some() {
+                execute_behaviors(&triggers.double_click);
+            } else {
+                state.pending_click = Some(PendingClick {
+                    due_at: Instant::now() + Duration::from_millis(DOUBLE_CLICK_MS),
+                    original_virtual_key: press.original_virtual_key,
+                });
+            }
+        } else {
+            execute_click_or_original(&triggers.click, press.original_virtual_key);
+        }
+    }
+    fn process_timers(&mut self, shared: &Shared) {
+        let settings = shared
+            .settings
+            .read()
+            .map(|s| s.clone())
+            .unwrap_or_default();
+        let now = Instant::now();
+        for source in SOURCE_KEYS {
+            let Some(state) = self.buttons.get_mut(source.id) else {
+                continue;
+            };
+            let triggers = settings
+                .behaviors
+                .get(source.id)
+                .cloned()
+                .unwrap_or_default();
+            if !settings.enabled || !has_custom_behavior(&triggers) {
+                if let Some(press) = state.pressed.as_mut() {
+                    if !press.passthrough {
+                        if !press.held_outputs.is_empty() {
+                            release_chord(&press.held_outputs);
+                            press.held_outputs.clear();
+                        }
+                        press.wheel_repeat = None;
+                        press.long_repeat_due_at = None;
+                        send_original_key_down(press.original_virtual_key);
+                        press.passthrough = true;
+                        press.next_repeat_at = now + Duration::from_millis(REPEAT_INITIAL_MS);
+                    } else if now >= press.next_repeat_at {
+                        send_original_key_down(press.original_virtual_key);
+                        press.next_repeat_at = now + Duration::from_millis(REPEAT_INTERVAL_MS);
+                    }
+                }
+                if let Some(pending) = state.pending_click.take() {
+                    tap_original_key(pending.original_virtual_key);
+                }
+                continue;
+            }
+            if let Some(press) = state.pressed.as_mut() {
+                if press.passthrough {
+                    if now >= press.next_repeat_at {
+                        send_original_key_down(press.original_virtual_key);
+                        press.next_repeat_at = now + Duration::from_millis(REPEAT_INTERVAL_MS);
+                    }
+                    continue;
+                }
+                if let Some((delta, horizontal)) = press.wheel_repeat {
+                    if continuous_click_wheel(&triggers) == Some((delta, horizontal)) {
+                        if now >= press.next_repeat_at {
+                            send_wheel_with_axis(delta, horizontal);
+                            press.next_repeat_at = now + Duration::from_millis(80);
+                        }
+                        continue;
+                    }
+                    press.wheel_repeat = None;
+                }
+                if now.duration_since(press.started_at) >= Duration::from_millis(LONG_PRESS_MS)
+                    && !press.long_fired
+                    && press.held_outputs.is_empty()
+                {
+                    if has_enabled(&triggers.long_press) {
+                        execute_behaviors(&triggers.long_press);
+                        press.long_fired = true;
+                        press.long_repeat_due_at =
+                            Some(now + Duration::from_millis(LONG_PRESS_REPEAT_INITIAL_MS));
+                    } else {
+                        send_original_key_down(press.original_virtual_key);
+                        press.passthrough = true;
+                        press.next_repeat_at = now + Duration::from_millis(REPEAT_INTERVAL_MS);
+                    }
+                    state.pending_click = None;
+                }
+                if let Some(due_at) = press.long_repeat_due_at {
+                    if !has_enabled(&triggers.long_press) {
+                        press.long_repeat_due_at = None;
+                    } else if now >= due_at {
+                        execute_behaviors(&triggers.long_press);
+                        press.long_repeat_due_at =
+                            Some(now + Duration::from_millis(LONG_PRESS_REPEAT_INTERVAL_MS));
+                    }
+                }
+                if now >= press.next_repeat_at {
+                    if !press.held_outputs.is_empty() {
+                        repeat_chord(&press.held_outputs);
+                    }
+                    press.next_repeat_at = now + Duration::from_millis(REPEAT_INTERVAL_MS);
+                }
+            }
+            if state.pressed.is_none()
+                && state
+                    .pending_click
+                    .as_ref()
+                    .is_some_and(|p| now >= p.due_at)
+            {
+                if let Some(pending) = state.pending_click.take() {
+                    execute_click_or_original(&triggers.click, pending.original_virtual_key);
+                }
+            }
+        }
+    }
+    fn release_all(&mut self) {
+        for state in self.buttons.values_mut() {
+            state.pending_click = None;
+            if let Some(press) = state.pressed.take() {
+                if !press.held_outputs.is_empty() {
+                    release_chord(&press.held_outputs);
+                }
+                if press.passthrough {
+                    send_original_key_up(press.original_virtual_key);
+                }
+            }
+        }
+        self.active_usages.clear();
     }
 
-    let Some(press) = state.pressed.take() else {
-        log::warn!(target: "axonkey::input", "RC003 unmatched key-up ignored: button={}", source.id);
-        return;
-    };
-    if press.wheel_repeat.is_some() {
-        return;
-    }
-    if !press.held_outputs.is_empty() {
-        release_chord(api, context, device, &press.held_outputs);
-        return;
-    }
-    if press.passthrough_long {
-        send_stroke(api, context, device, stroke);
-        return;
-    }
-    if press.long_fired {
-        return;
-    }
-    let long_enabled = has_enabled(&triggers.long_press);
-    if long_enabled && press.started_at.elapsed() >= Duration::from_millis(LONG_PRESS_MS) {
-        log::info!(target: "axonkey::input", "RC003 gesture: button={}, trigger=long_press, origin=key_up", source.id);
-        execute_behaviors(api, context, device, &triggers.long_press);
-        return;
-    }
-    if !long_enabled && press.started_at.elapsed() >= Duration::from_millis(LONG_PRESS_MS) {
-        send_original_down(api, context, device, press.original);
-        send_stroke(api, context, device, stroke);
-        return;
-    }
-    if has_enabled(&triggers.double_click) {
-        if state.pending_click.take().is_some() {
-            log::info!(target: "axonkey::input", "RC003 gesture: button={}, trigger=double_click", source.id);
-            execute_behaviors(api, context, device, &triggers.double_click);
-        } else {
-            log::info!(target: "axonkey::input", "RC003 click pending: button={}", source.id);
-            state.pending_click = Some(PendingClick {
-                due_at: Instant::now() + Duration::from_millis(DOUBLE_CLICK_MS),
-                original: press.original,
-            });
+    fn release_all_with_events(&mut self, shared: &Shared) {
+        let active_usages = self.active_usages.clone();
+        self.release_all();
+        for usage in active_usages {
+            if let Some(source) = source_for_usage(usage) {
+                emit_remote_key(shared, source.id, false);
+            }
         }
-    } else {
-        log::info!(target: "axonkey::input", "RC003 gesture: button={}, trigger=click", source.id);
-        execute_click_or_original(api, context, device, &triggers.click, press.original);
     }
 }
 
+#[cfg(not(test))]
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoteKeyEvent {
     button: &'static str,
     pressed: bool,
 }
-
-#[cfg(not(test))]
-fn emit_remote_key_event(shared: &Shared, button: &'static str, pressed: bool) {
-    let app = shared
-        .event_app
-        .read()
-        .ok()
-        .and_then(|event_app| event_app.clone());
+fn emit_remote_key(shared: &Shared, button: &'static str, pressed: bool) {
+    let app = shared.event_app.read().ok().and_then(|value| value.clone());
+    #[cfg(not(test))]
     if let Some(app) = app {
         let _ = app.emit("axonkey-remote-key", RemoteKeyEvent { button, pressed });
     }
+    #[cfg(test)]
+    let _ = (app, button, pressed);
 }
-
-fn process_timers(
-    api: &InterceptionApi,
-    context: Context,
-    device: i32,
-    shared: &Shared,
-    states: &mut HashMap<&'static str, ButtonState>,
-    now: Instant,
-) {
-    let settings = shared
-        .settings
-        .read()
-        .map(|settings| settings.clone())
-        .unwrap_or_default();
-    if !settings.enabled {
-        release_all_held_outputs(api, context, device, states);
-        states.clear();
-        return;
-    }
-    for source in SOURCE_KEYS {
-        let Some(state) = states.get_mut(source.id) else {
-            continue;
-        };
-        let triggers = settings
-            .behaviors
-            .get(source.id)
-            .cloned()
-            .unwrap_or_default();
-        if let Some(press) = state.pressed.as_mut() {
-            if let Some((delta, horizontal, due)) = press.wheel_repeat.as_mut() {
-                if continuous_click_wheel(&triggers) == Some((*delta, *horizontal)) && now >= *due {
-                    send_wheel_with_axis(*delta, *horizontal);
-                    *due = now + Duration::from_millis(80);
-                } else if continuous_click_wheel(&triggers) != Some((*delta, *horizontal)) {
-                    // A mapping change while the key is held must cancel the
-                    // old wheel gesture rather than leaving stale repeat state.
-                    press.wheel_repeat = None;
-                }
-                if press.wheel_repeat.is_some() {
-                    continue;
-                }
-            }
-            let reached_long_press =
-                now.duration_since(press.started_at) >= Duration::from_millis(LONG_PRESS_MS);
-            if press.held_outputs.is_empty()
-                && !press.long_fired
-                && !press.passthrough_long
-                && reached_long_press
-            {
-                if has_enabled(&triggers.long_press) {
-                    log::info!(target: "axonkey::input", "RC003 gesture: button={}, trigger=long_press, origin=timer", source.id);
-                    execute_behaviors(api, context, device, &triggers.long_press);
-                    press.long_fired = true;
-                    press.long_repeat_due_at =
-                        Some(now + Duration::from_millis(LONG_PRESS_REPEAT_INITIAL_MS));
-                } else {
-                    log::info!(target: "axonkey::input", "RC003 long-press passthrough: button={}", source.id);
-                    send_original_down(api, context, device, press.original);
-                    press.passthrough_long = true;
-                }
-                state.pending_click = None;
-            }
-            if let Some(due_at) = press.long_repeat_due_at {
-                if !has_enabled(&triggers.long_press) {
-                    press.long_repeat_due_at = None;
-                } else if now >= due_at {
-                    log::info!(target: "axonkey::input", "RC003 repeat: button={}, trigger=long_press, origin=timer, held_ms={}", source.id, now.duration_since(press.started_at).as_millis());
-                    execute_behaviors(api, context, device, &triggers.long_press);
-                    press.long_repeat_due_at = Some(
-                        now + Duration::from_millis(LONG_PRESS_REPEAT_INTERVAL_MS),
-                    );
-                }
-            }
-            if !press.held_outputs.is_empty() && now >= press.next_repeat_at {
-                log::info!(target: "axonkey::input", "RC003 repeat: button={}, origin=timer, held_ms={}, passthrough={}", source.id, now.duration_since(press.started_at).as_millis(), press.passthrough_long);
-                if let Some(repeat) = press.held_outputs.last().copied() {
-                    send_stroke(api, context, device, repeat);
-                }
-                press.next_repeat_at = now + Duration::from_millis(press.repeat_interval_ms);
-            }
-        }
-        if state
-            .pending_click
-            .as_ref()
-            .is_some_and(|pending| now >= pending.due_at)
-        {
-            let pending = state.pending_click.take().unwrap();
-            log::info!(target: "axonkey::input", "RC003 gesture: button={}, trigger=click, origin=timer", source.id);
-            execute_click_or_original(api, context, device, &triggers.click, pending.original);
-        }
-    }
+fn has_enabled(values: &[NativeBehavior]) -> bool {
+    values.iter().any(NativeBehavior::enabled)
 }
-
-fn has_enabled(behaviors: &[NativeBehavior]) -> bool {
-    behaviors.iter().any(NativeBehavior::enabled)
-}
-
 fn has_custom_behavior(triggers: &TriggerBehaviors) -> bool {
     has_enabled(&triggers.click)
         || has_enabled(&triggers.double_click)
         || has_enabled(&triggers.long_press)
 }
-
 fn continuous_click_chord(triggers: &TriggerBehaviors) -> Option<Vec<u16>> {
     if has_enabled(&triggers.double_click) || has_enabled(&triggers.long_press) {
         return None;
     }
-
-    let mut enabled_clicks = triggers.click.iter().filter(|behavior| behavior.enabled());
-    let behavior = enabled_clicks.next()?;
-    if enabled_clicks.next().is_some() {
+    let mut values = triggers.click.iter().filter(|v| v.enabled());
+    let first = values.next()?;
+    if values.next().is_some() {
         return None;
     }
-    behavior_chord(behavior)
+    behavior_chord(first)
 }
-
-fn wheel_delta(direction: WheelDirection) -> i32 {
-    match direction {
-        WheelDirection::Up => 120,
-        WheelDirection::Down => -120,
-        WheelDirection::Left => -120,
-        WheelDirection::Right => 120,
-    }
-}
-
 fn continuous_click_wheel(triggers: &TriggerBehaviors) -> Option<(i32, bool)> {
     if has_enabled(&triggers.double_click) || has_enabled(&triggers.long_press) {
         return None;
     }
-    let mut enabled = triggers.click.iter().filter(|behavior| behavior.enabled());
-    let first = enabled.next()?;
-    if enabled.next().is_some() {
+    let mut values = triggers.click.iter().filter(|v| v.enabled());
+    let first = values.next()?;
+    if values.next().is_some() {
         return None;
     }
     match first {
-        NativeBehavior::Wheel { direction, .. } => {
-            Some((wheel_delta(*direction), wheel_horizontal(*direction)))
-        }
+        NativeBehavior::Wheel { direction, .. } => Some(wheel_delta(*direction)),
         _ => None,
     }
 }
-
-fn execute_click_or_original(
-    api: &InterceptionApi,
-    context: Context,
-    device: i32,
-    behaviors: &[NativeBehavior],
-    original: KeyStroke,
-) {
-    if has_enabled(behaviors) {
-        execute_behaviors(api, context, device, behaviors);
-    } else {
-        let mut down = original;
-        down.state &= !KEY_UP;
-        if send_stroke(api, context, device, down) {
-            thread::sleep(OUTPUT_TAP_DURATION);
-            down.state |= KEY_UP;
-            send_stroke(api, context, device, down);
-        }
+fn wheel_delta(direction: WheelDirection) -> (i32, bool) {
+    match direction {
+        WheelDirection::Up => (120, false),
+        WheelDirection::Down => (-120, false),
+        WheelDirection::Left => (-120, true),
+        WheelDirection::Right => (120, true),
     }
 }
-
-fn send_original_down(
-    api: &InterceptionApi,
-    context: Context,
-    device: i32,
-    mut original: KeyStroke,
-) {
-    original.state &= !KEY_UP;
-    send_stroke(api, context, device, original);
+fn execute_click_or_original(values: &[NativeBehavior], original_virtual_key: u16) {
+    if has_enabled(values) {
+        execute_behaviors(values);
+    } else {
+        tap_original_key(original_virtual_key);
+    }
 }
-
-fn execute_behaviors(
-    api: &InterceptionApi,
-    context: Context,
-    device: i32,
-    behaviors: &[NativeBehavior],
-) {
-    for behavior in behaviors.iter().filter(|behavior| behavior.enabled()) {
-        match behavior {
-            NativeBehavior::Wheel { direction, .. } => {
-                log::info!(target: "axonkey::input", "Mapped wheel: delta={}", wheel_delta(*direction))
-            }
-            NativeBehavior::Mouse { button, .. } => {
-                log::info!(target: "axonkey::input", "Mapped mouse button: {button:?}")
-            }
-            NativeBehavior::Key { key, .. } => {
-                log::info!(target: "axonkey::input", "Mapped action: type=key, key={key:?}")
-            }
-            NativeBehavior::Shortcut { keys, .. } => {
-                log::info!(target: "axonkey::input", "Mapped action: type=shortcut, keys={keys:?}")
-            }
-            NativeBehavior::Paste { text, .. } => {
-                log::info!(target: "axonkey::input", "Mapped action: type=paste, chars={}", text.chars().count())
-            }
-            NativeBehavior::Delay { ms, .. } => {
-                log::info!(target: "axonkey::input", "Mapped action: type=delay, effective_ms={}", (*ms).min(300_000))
-            }
-            NativeBehavior::Disabled { .. } => {
-                log::info!(target: "axonkey::input", "Mapped action: type=disabled")
-            }
-        }
-        match behavior {
-            NativeBehavior::Wheel { direction, .. } => {
-                send_wheel_with_axis(wheel_delta(*direction), wheel_horizontal(*direction))
-            }
-            NativeBehavior::Mouse { button, .. } => send_mouse_click(*button),
+fn execute_behaviors(values: &[NativeBehavior]) {
+    for value in values.iter().filter(|v| v.enabled()) {
+        match value {
             NativeBehavior::Key { .. } | NativeBehavior::Shortcut { .. } => {
-                if let Some(chord) = behavior_chord(behavior) {
-                    tap_chord(api, context, device, &chord);
+                if let Some(keys) = behavior_chord(value) {
+                    tap_chord(&keys);
                 }
+            }
+            NativeBehavior::Wheel { direction, .. } => {
+                let (delta, horizontal) = wheel_delta(*direction);
+                send_wheel_with_axis(delta, horizontal);
             }
             NativeBehavior::Paste { text, .. } => send_unicode_text(text),
             NativeBehavior::Delay { ms, .. } => {
                 thread::sleep(Duration::from_millis((*ms).min(300_000)))
             }
+            NativeBehavior::Mouse { button, .. } => send_mouse_click(*button),
             NativeBehavior::Disabled { .. } => {}
         }
     }
 }
-
 /// System mouse mappings use SendInput, independently of any RC003 keyboard.
 pub(super) fn execute_mouse_behavior(behavior: &NativeBehavior, hold_ms: u64) {
     match behavior {
         NativeBehavior::Wheel { direction, .. } => {
-            send_wheel_with_axis(wheel_delta(*direction), wheel_horizontal(*direction))
+            let (delta, horizontal) = wheel_delta(*direction);
+            send_wheel_with_axis(delta, horizontal)
         }
         NativeBehavior::Mouse { button, .. } => send_mouse_click(*button),
         NativeBehavior::Paste { text, .. } => send_unicode_text(text),
@@ -1038,7 +743,8 @@ pub(super) fn execute_mouse_behavior(behavior: &NativeBehavior, hold_ms: u64) {
 }
 
 fn virtual_key_input(key: u16) -> Input {
-    let extended = unsafe { MapVirtualKeyW(key as u32, 4) } >> 8 == 0xe0;
+    let scan = unsafe { MapVirtualKeyW(key as u32, 4) };
+    let extended = scan >> 8 == 0xe0 || is_extended_key(key);
     Input {
         kind: 1,
         value: InputValue {
@@ -1055,7 +761,11 @@ fn virtual_key_input(key: u16) -> Input {
 
 /// Zero hold submits a complete tap in one batch; a configured hold separates
 /// down and up for applications that need time to recognize a pressed key.
-fn send_mouse_chord_with(keys: &[u16], hold_ms: u64, mut send: impl FnMut(&[Input]) -> usize) -> bool {
+fn send_mouse_chord_with(
+    keys: &[u16],
+    hold_ms: u64,
+    mut send: impl FnMut(&[Input]) -> usize,
+) -> bool {
     if keys.is_empty() {
         return true;
     }
@@ -1071,8 +781,17 @@ fn send_mouse_chord_with(keys: &[u16], hold_ms: u64, mut send: impl FnMut(&[Inpu
         if pressed == downs.len() {
             thread::sleep(Duration::from_millis(hold_ms.min(1000)));
         }
-        let ups: Vec<Input> = downs[..pressed].iter().copied().rev().map(release).collect();
-        let released = if ups.is_empty() { 0 } else { send(&ups).min(ups.len()) };
+        let ups: Vec<Input> = downs[..pressed]
+            .iter()
+            .copied()
+            .rev()
+            .map(release)
+            .collect();
+        let released = if ups.is_empty() {
+            0
+        } else {
+            send(&ups).min(ups.len())
+        };
         if released < ups.len() {
             send(&ups[released..]);
         }
@@ -1147,125 +866,88 @@ fn behavior_chord(behavior: &NativeBehavior) -> Option<Vec<u16>> {
     }
 }
 
-fn press_chord(
-    api: &InterceptionApi,
-    context: Context,
-    device: i32,
-    keys: &[u16],
-) -> Vec<KeyStroke> {
-    let mut pressed = Vec::new();
-    log::info!(target: "axonkey::input", "Mapped chord press: device={device}, virtual_keys={keys:X?}");
-    for key in keys {
-        if let Some(stroke) = output_stroke(*key, false) {
-            if send_stroke(api, context, device, stroke) {
-                pressed.push(stroke);
-            }
-        } else {
-            log::warn!(target: "axonkey::input", "Mapped key conversion failed: virtual_key=0x{key:04X}");
-        }
+fn press_chord(keys: &[u16]) -> Vec<(u16, bool)> {
+    if keys.is_empty() {
+        return Vec::new();
     }
-    pressed
+    let inputs: Vec<Input> = keys.iter().copied().map(virtual_key_input).collect();
+    let sent = send_mouse_keyboard_inputs(&inputs).min(inputs.len());
+    let accepted = keys[..sent]
+        .iter()
+        .copied()
+        .map(|key| (key, is_extended_key(key)))
+        .collect();
+    if sent < inputs.len() {
+        let cleanup: Vec<Input> = inputs[..sent]
+            .iter()
+            .copied()
+            .rev()
+            .map(keyboard_release)
+            .collect();
+        let _ = send_mouse_keyboard_inputs(&cleanup);
+    }
+    accepted
 }
 
-fn release_chord(api: &InterceptionApi, context: Context, device: i32, pressed: &[KeyStroke]) {
-    if !pressed.is_empty() {
-        log::info!(target: "axonkey::input", "Mapped chord release: device={device}, keys={}", pressed.len());
+fn release_chord(pressed: &[(u16, bool)]) {
+    if pressed.is_empty() {
+        return;
     }
-    for mut stroke in pressed.iter().copied().rev() {
-        stroke.state |= KEY_UP;
-        send_stroke(api, context, device, stroke);
-    }
-}
-
-fn tap_chord(api: &InterceptionApi, context: Context, device: i32, keys: &[u16]) {
-    let pressed = press_chord(api, context, device, keys);
-    if !pressed.is_empty() {
-        log::info!(target: "axonkey::input", "Mapped tap: device={device}, hold_ms={}", OUTPUT_TAP_DURATION.as_millis());
-        thread::sleep(OUTPUT_TAP_DURATION);
-    }
-    release_chord(api, context, device, &pressed);
-}
-
-fn release_all_held_outputs(
-    api: &InterceptionApi,
-    context: Context,
-    device: i32,
-    states: &mut HashMap<&'static str, ButtonState>,
-) {
-    for (button, state) in states.iter_mut() {
-        // A forced reset must never allow a delayed click from the old
-        // configuration to fire after disable/disconnect/reconnect.
-        state.pending_click = None;
-        if let Some(press) = state.pressed.as_mut() {
-            if !press.held_outputs.is_empty() {
-                log::info!(target: "axonkey::input", "Mapped forced release: button={button}, keys={}, held_ms={}", press.held_outputs.len(), press.started_at.elapsed().as_millis());
-            }
-            release_chord(api, context, device, &press.held_outputs);
-            press.held_outputs.clear();
-            if press.passthrough_long {
-                let mut up = press.original;
-                up.state |= KEY_UP;
-                send_stroke(api, context, device, up);
-                press.passthrough_long = false;
-            }
-        }
+    let inputs: Vec<Input> = pressed
+        .iter()
+        .rev()
+        .map(|(key, _)| keyboard_release(virtual_key_input(*key)))
+        .collect();
+    let sent = send_mouse_keyboard_inputs(&inputs).min(inputs.len());
+    if sent < inputs.len() {
+        let _ = send_mouse_keyboard_inputs(&inputs[sent..]);
     }
 }
 
-#[cfg(test)]
-fn emit_remote_key_event(_shared: &Shared, _button: &'static str, _pressed: bool) {}
-
-fn send_stroke(api: &InterceptionApi, context: Context, device: i32, stroke: KeyStroke) -> bool {
-    let sent = unsafe { (api.send)(context, device, &stroke, 1) };
-    let is_up = stroke.state & KEY_UP != 0;
-    static OUTPUT_LOGS: OnceLock<Mutex<HashMap<(i32, u16, u16), Instant>>> = OnceLock::new();
-    let now = Instant::now();
-    let key = (device, stroke.code, stroke.state & KEY_E0);
-    let should_log = is_up
-        || OUTPUT_LOGS
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .map(|mut logs| {
-                let previous = logs.insert(key, now);
-                previous.is_none_or(|time| now.duration_since(time) >= Duration::from_secs(1))
-            })
-            .unwrap_or(true);
-    if should_log {
-        log::info!(target: "axonkey::input", "RC003 output: device={device}, phase={}, scan=0x{:04X}, state=0x{:04X}, sent={sent}",
-            if is_up { "up" } else { "down" }, stroke.code, stroke.state);
+fn repeat_chord(pressed: &[(u16, bool)]) {
+    if let Some((key, _)) = pressed.iter().rev().find(|(key, _)| !is_modifier(*key)) {
+        let _ = send_mouse_keyboard_inputs(&[virtual_key_input(*key)]);
     }
-    if sent != 1 {
-        log::warn!(target: "axonkey::input", "RC003 output injection failed: device={device}, scan=0x{:04X}, state=0x{:04X}, sent={sent}", stroke.code, stroke.state);
-    }
-    sent == 1
 }
 
-fn output_stroke(virtual_key: u16, key_up: bool) -> Option<KeyStroke> {
-    let mut scan = unsafe { MapVirtualKeyW(virtual_key as u32, 4) };
-    if scan == 0 {
-        scan = match virtual_key {
-            0xad => 0xe020,
-            0xae => 0xe02e,
-            0xaf => 0xe030,
-            0xb3 => 0xe022,
-            _ => 0,
-        };
+fn tap_chord(keys: &[u16]) {
+    if !send_mouse_chord_with(
+        keys,
+        OUTPUT_TAP_DURATION.as_millis() as u64,
+        send_mouse_keyboard_inputs,
+    ) {
+        log::warn!(target: "axonkey::input", "Mapped keyboard injection incomplete");
     }
-    let code = (scan & 0xff) as u16;
-    if code == 0 {
-        return None;
+}
+
+fn send_original_key_down(virtual_key: u16) {
+    let _ = send_mouse_keyboard_inputs(&[virtual_key_input(virtual_key)]);
+}
+
+fn send_original_key_up(virtual_key: u16) {
+    let _ = send_mouse_keyboard_inputs(&[keyboard_release(virtual_key_input(virtual_key))]);
+}
+
+fn tap_original_key(virtual_key: u16) {
+    send_original_key_down(virtual_key);
+    thread::sleep(OUTPUT_TAP_DURATION);
+    send_original_key_up(virtual_key);
+}
+
+fn keyboard_release(mut input: Input) -> Input {
+    unsafe {
+        input.value.keyboard.flags |= 2;
     }
-    let extended = scan & 0xff00 == 0xe000 || is_extended_key(virtual_key);
-    Some(KeyStroke {
-        code,
-        state: (u16::from(extended) * KEY_E0) | (u16::from(key_up) * KEY_UP),
-        information: 0,
-    })
+    input
+}
+
+fn is_modifier(vk: u16) -> bool {
+    matches!(vk, 0x10 | 0x11 | 0x12 | 0x5b | 0x5c | 0xa0..=0xa5)
 }
 
 fn is_extended_key(key: u16) -> bool {
     matches!(key,
-        0xa3 | 0xa5 | 0x5b | 0x5c | 0x21..=0x28 | 0x2d | 0x2e | 0x5d | 0xad..=0xaf | 0xb3
+        0x5e | 0xa3 | 0xa5 | 0x5b | 0x5c | 0x21..=0x28 | 0x2d | 0x2e | 0x5d | 0xa6..=0xaf | 0xb3
     )
 }
 
@@ -1441,14 +1123,6 @@ thread_local! {
     static WHEEL_EVENTS: std::cell::RefCell<Vec<i32>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-fn send_wheel(delta: i32) {
-    send_wheel_with_axis(delta, false)
-}
-
-fn wheel_horizontal(direction: WheelDirection) -> bool {
-    matches!(direction, WheelDirection::Left | WheelDirection::Right)
-}
-
 fn send_wheel_with_axis(delta: i32, horizontal: bool) {
     let input = wheel_input(delta, horizontal);
     #[cfg(test)]
@@ -1493,6 +1167,8 @@ fn send_mouse_click(button: super::MouseButton) {
         {
             let _ = unsafe { SendInput(1, &input, std::mem::size_of::<Input>() as i32) };
         }
+        #[cfg(test)]
+        let _ = input;
     }
 }
 
@@ -1553,37 +1229,128 @@ unsafe fn SendInput(_input_count: u32, _inputs: *const Input, _input_size: i32) 
     0
 }
 
-#[cfg(target_os = "windows")]
-#[link(name = "cfgmgr32")]
-extern "system" {
-    #[link_name = "CM_Get_Device_ID_List_SizeW"]
-    fn cm_get_device_id_list_size(length: *mut u32, filter: *const u16, flags: u32) -> u32;
-    #[link_name = "CM_Get_Device_ID_ListW"]
-    fn cm_get_device_id_list(
-        filter: *const u16,
-        buffer: *mut u16,
-        buffer_length: u32,
-        flags: u32,
-    ) -> u32;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_shared(settings: NativeSettings) -> Shared {
+        Shared {
+            settings: RwLock::new(settings),
+            status: Mutex::new(InputServiceStatus::default()),
+            event_app: RwLock::new(None),
+            stop: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn parses_service_hid_reports_and_rejects_invalid_ids() {
+        assert_eq!(
+            parse_hid_report(&[1, 0x3e, 0, 0, 0, 0, 0]).unwrap(),
+            [0x3e].into()
+        );
+        assert_eq!(
+            parse_hid_report(&[1, 0xf1, 0, 0x80, 0, 0x81, 0]).unwrap(),
+            [0xf1, 0x80, 0x81].into()
+        );
+        assert_eq!(parse_hid_report(&[0, 0x52, 0]).unwrap(), [0x52].into());
+        assert_eq!(
+            parse_hid_report(&[1, 0, 0, 0, 0, 0, 0]).unwrap(),
+            HashSet::new()
+        );
+        assert!(parse_hid_report(&[]).is_none());
+        assert!(parse_hid_report(&[2, 0, 0]).is_none());
+        assert!(parse_hid_report(&[1, 0, 0, 0x3e]).is_none());
+        assert!(parse_hid_report(&[1, 1, 0, 0, 0]).is_none());
+    }
+
+    #[test]
+    fn maps_confirm_and_extended_media_usages() {
+        assert_eq!(source_for_usage(0x28).unwrap().id, "confirm");
+        assert_eq!(source_for_usage(0xf1).unwrap().id, "back");
+        assert_eq!(source_for_usage(0x80).unwrap().id, "volumeUp");
+        assert_eq!(source_for_usage(0x81).unwrap().id, "volumeDown");
+        assert_eq!(source_for_usage(0xf1).unwrap().original_virtual_key, 0xa6);
+        assert_eq!(source_for_usage(0x80).unwrap().original_virtual_key, 0xaf);
+        assert_eq!(source_for_usage(0x81).unwrap().original_virtual_key, 0xae);
+        assert_ne!(
+            unsafe { virtual_key_input(0xa6).value.keyboard.flags } & 1,
+            0
+        );
+        assert_ne!(
+            unsafe { virtual_key_input(0xaf).value.keyboard.flags } & 1,
+            0
+        );
+    }
+
+    #[test]
+    fn unmapped_windows_button_replays_original_virtual_key() {
+        MOUSE_KEY_BATCHES.with(|batches| batches.borrow_mut().clear());
+        let shared = test_shared(NativeSettings::default());
+        let source = source_for_usage(0xf1).unwrap();
+        let mut state = InputState::default();
+
+        state.press_source(&shared, source);
+        state.release_source(&shared, source);
+
+        MOUSE_KEY_BATCHES.with(|batches| {
+            let batches = batches.borrow();
+            assert_eq!(batches.len(), 2);
+            assert_eq!(batches[0][0].0, 0xa6);
+            assert_eq!(batches[0][0].1 & 2, 0);
+            assert_eq!(batches[1][0].0, 0xa6);
+            assert_eq!(batches[1][0].1 & 2, 2);
+        });
+    }
+
+    #[test]
+    fn configured_windows_button_uses_behavior_output_instead_of_original_key() {
+        MOUSE_KEY_BATCHES.with(|batches| batches.borrow_mut().clear());
+        let mut settings = NativeSettings::default();
+        settings.enabled = true;
+        settings.behaviors.insert(
+            "back".into(),
+            TriggerBehaviors {
+                click: vec![NativeBehavior::Key {
+                    enabled: true,
+                    key: "Escape".into(),
+                }],
+                ..TriggerBehaviors::default()
+            },
+        );
+        let shared = test_shared(settings);
+        let source = source_for_usage(0xf1).unwrap();
+        let mut state = InputState::default();
+
+        state.press_source(&shared, source);
+        state.release_source(&shared, source);
+
+        MOUSE_KEY_BATCHES.with(|batches| {
+            let batches = batches.borrow();
+            assert_eq!(batches.len(), 2);
+            assert_eq!(batches[0][0].0, 0x1b);
+            assert_eq!(batches[1][0].0, 0x1b);
+            assert!(batches
+                .iter()
+                .all(|batch| batch.iter().all(|(key, _)| *key != 0xa6)));
+        });
+    }
 
     #[test]
     fn mouse_shortcut_burst_has_no_per_event_hold_delay() {
         MOUSE_KEY_BATCHES.with(|batches| batches.borrow_mut().clear());
         let started = Instant::now();
         for index in 0..40 {
-            execute_mouse_behavior(&NativeBehavior::Shortcut {
-                enabled: true,
-                keys: if index % 2 == 0 {
-                    vec!["Ctrl".into(), "Shift".into(), "Tab".into()]
-                } else {
-                    vec!["Ctrl".into(), "Tab".into()]
+            execute_mouse_behavior(
+                &NativeBehavior::Shortcut {
+                    enabled: true,
+                    keys: if index % 2 == 0 {
+                        vec!["Ctrl".into(), "Shift".into(), "Tab".into()]
+                    } else {
+                        vec!["Ctrl".into(), "Tab".into()]
+                    },
                 },
-            }, 0);
+                0,
+            );
         }
         let elapsed = started.elapsed();
         println!("40 alternating mouse shortcut outputs (mock injection): {elapsed:?}");
@@ -1622,9 +1389,15 @@ mod tests {
         let started = Instant::now();
         let mut batches = Vec::new();
         assert!(send_mouse_chord_with(&[0x11, 0x09], 20, |inputs| {
-            batches.push((started.elapsed(), inputs.iter().map(|input| unsafe {
-                (input.value.keyboard.virtual_key, input.value.keyboard.flags)
-            }).collect::<Vec<_>>()));
+            batches.push((
+                started.elapsed(),
+                inputs
+                    .iter()
+                    .map(|input| unsafe {
+                        (input.value.keyboard.virtual_key, input.value.keyboard.flags)
+                    })
+                    .collect::<Vec<_>>(),
+            ));
             inputs.len()
         }));
         assert_eq!(batches.len(), 2);
@@ -1642,11 +1415,16 @@ mod tests {
                 calls += 1;
                 let sent = if (partial_release && calls == 2) || (!partial_release && calls == 1) {
                     1
-                } else { inputs.len() };
+                } else {
+                    inputs.len()
+                };
                 for input in &inputs[..sent] {
                     let key = unsafe { input.value.keyboard };
-                    if key.flags & 2 == 0 { held.push(key.virtual_key); }
-                    else { assert_eq!(held.pop(), Some(key.virtual_key)); }
+                    if key.flags & 2 == 0 {
+                        held.push(key.virtual_key);
+                    } else {
+                        assert_eq!(held.pop(), Some(key.virtual_key));
+                    }
                 }
                 sent
             }));
@@ -1718,63 +1496,10 @@ mod tests {
         .is_ok());
     }
     #[test]
-    fn matches_real_rc003_hardware_id_variants() {
-        assert!(is_target_hardware_id("HID\\VID_2717&PID_32B8"));
-        assert!(is_target_hardware_id(
-            "HID\\{GUID}_DEV_VID&012717_PID&32B8_REV&00A4"
-        ));
-        assert!(!is_target_hardware_id("USB\\VID_2717&PID_D002"));
-    }
-
-    #[test]
-    fn keeps_short_ble_hid_disconnects_out_of_the_visible_status() {
-        let now = Instant::now();
-        assert!(device_connection_visible(true, None, now));
-        assert!(device_connection_visible(
-            false,
-            now.checked_sub(Duration::from_secs(7)),
-            now
-        ));
-        assert!(!device_connection_visible(
-            false,
-            now.checked_sub(Duration::from_secs(8)),
-            now
-        ));
-    }
-
-    #[test]
-    fn selects_only_the_rc003_keyboard_from_present_device_ids() {
-        let ids = [
-            "BTHLEDEVICE\\SERVICE_DEV_VID&012717_PID&32B8",
-            "HID\\OTHER_DEV_VID&012717_PID&0001",
-            "HID\\RC003_DEV_VID&012717_PID&32B8",
-        ]
-        .join("\0")
-            + "\0\0";
-        let buffer = ids.encode_utf16().collect::<Vec<_>>();
-
-        assert_eq!(
-            rc003_keyboard_id_from_multisz(&buffer).as_deref(),
-            Some("HID\\RC003_DEV_VID&012717_PID&32B8")
-        );
-    }
-
-    #[test]
     fn parses_bracket_and_shortcuts() {
         assert_eq!(parse_chord("]"), Some(vec![0xdd]));
         assert_eq!(parse_chord("】"), Some(vec![0xdd]));
         assert_eq!(parse_chord("Ctrl+C"), Some(vec![0x11, 0x43]));
-    }
-
-    #[test]
-    fn finds_confirm_scan_code() {
-        let source = source_for(KeyStroke {
-            code: 0x1c,
-            state: 0,
-            information: 0,
-        })
-        .unwrap();
-        assert_eq!(source.id, "confirm");
     }
 
     #[test]
@@ -1824,7 +1549,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_behavior_suppresses_passthrough_without_holding_a_key() {
+    fn disabled_behavior_suppresses_output_without_holding_a_key() {
         let triggers = TriggerBehaviors {
             click: vec![NativeBehavior::Disabled { enabled: true }],
             ..TriggerBehaviors::default()

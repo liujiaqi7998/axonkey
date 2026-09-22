@@ -145,16 +145,3 @@ temp/
 src-tauri/resources/macos/*.driver/
 src-tauri/resources/macos/*.pkg
 src-tauri/gen/schemas/macOS-schema.json
-
-# Keycode Demo runtime artifacts.
-tools/keycode-demo/*.exe
-tools/keycode-demo/*.dll
-tools/keycode-demo/*.config
-tools/keycode-demo/*.log
-tools/keycode-demo/python-path.txt
-tools/keycode-demo/self-test.txt
-tools/keycode-demo/self-test-*.txt
-tools/keycode-demo/self-test-*.log
-tools/keycode-demo/self-test-*.png
-tools/keycode-demo/restart-*.ps1
-tools/keycode-demo/restart-*.txt

@@ -7,8 +7,10 @@
 `PID_32B8`/`PID&32B8` 的设备，依次挂载过滤器、开启数据转发，再通过
 `IOCTL_QUARBOR_SET_INPUT_BLOCK` 屏蔽送往 Windows 的原始输入。设备变化会触发重新枚举。
 原始 HID 报告读取循环已接入，`Endpoint::OnHidReport` 将完整报告发布为 RPC `KeyboardEvent`；
-桌面端负责按 usage 集合解析和执行映射。当前服务不会重新注入键盘输入，因此启用屏蔽后，
-Windows 不会收到这些设备的原始按键输入。
+桌面端负责按 usage 集合解析和执行映射，并在需要保留原按键时通过 Windows `SendInput`
+重放对应虚拟键。服务本身不会把报告重新注入物理 RC003 设备；启用屏蔽后，Windows
+不会再收到该设备未经桌面端处理的原始按键输入。Endpoint 读线程停止时会发布一个
+空 report，作为桌面端释放按键状态的 reset 通知。
 
 `ServiceConfig` 在服务启动时读取 64 位注册表配置：
 

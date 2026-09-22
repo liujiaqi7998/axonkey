@@ -3,12 +3,12 @@
 ```text
 Windows
   RC003 HID keyboard
-    -> Interception keyboard class filter driver
-    -> interception.dll user-mode API
-    -> exact VID/PID device selection
-    -> source scan-code lookup (including E0 state)
+    -> Quarbor HID filter driver
+    -> AxonkeyService endpoint and HID report forwarding
+    -> \\.\pipe\AxonkeyService.v1 KeyboardEvent
+    -> report ID 1, little-endian HID usage set
     -> mapping snapshot and gesture state
-    -> Interception send on the same RC003 keyboard device
+    -> SendInput behavior output
 
   RC003 ATVV voice service
     -> AxonkeyService Bluetooth GATT control and audio notifications
@@ -29,10 +29,13 @@ macOS
     -> MiRemoteV 2ch input selected by the consuming application
 ```
 
-The input service opens the Interception context, reads the hardware ID for each
-keyboard slot, and sets a filter only on the matching RC003.
-Other keyboards do not enter Axonkey's event loop and therefore cannot be
-suppressed by an RC003 mapping.
+On Windows, AxonkeyService enumerates HID Keyboard collections, matches the RC003
+VID/PID, mounts Quarbor and blocks the matching device's native input. It publishes
+the untouched report through `KeyboardEvent` events on the named pipe. The desktop
+client subscribes to keyboard events, computes usage edges and executes behaviors;
+it does not load a keyboard-class library, receive scan-code strokes or send output
+back through the physical RC003 device. The service owns the device filter and
+reconnect lifecycle, so ordinary keyboards never enter the RC003 event stream.
 
 On macOS, the input service starts in non-exclusive monitor mode. When custom
 mappings are enabled and both Input Monitoring and Accessibility permissions
@@ -52,9 +55,10 @@ system reboot is involved in a mapping edit. On macOS, changing the master
 enabled state restarts only the IOHIDManager session so it can enter or leave
 capture mode safely.
 
-Installing or removing Interception requires administrator access and a Windows
-reboot. Normal Axonkey execution uses the current user's privileges. Quitting
-Axonkey releases its user-mode Interception context.
+The Quarbor driver package and AxonkeyService are installed and managed as one
+Windows setup flow. Normal mapping changes only replace the desktop settings
+snapshot; stopping Axonkey closes the named-pipe subscription and releases any
+synthetic outputs while the service may continue to provide device and voice state.
 
 The macOS backend is compiled from `native/macos_input.m` and
 `native/macos_audio.m` and links only Apple system frameworks. Input Monitoring

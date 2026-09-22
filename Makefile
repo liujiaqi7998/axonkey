@@ -1,4 +1,4 @@
-.PHONY: dev kill clean version-check build build-macos build-macos-audio test-release release uninstall-driver
+.PHONY: dev kill clean version-check build build-macos build-macos-audio test-release release
 
 ENV_FILE ?= .env
 
@@ -34,6 +34,3 @@ build-macos-audio:
 
 test-release:
 	npm run test:release
-
-uninstall-driver:
-	powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\uninstall-driver.ps1"

@@ -18,12 +18,6 @@
       "../windows/driver/QuarborVirtualMicrophoneDriver.inf": "driver/QuarborVirtualMicrophoneDriver.inf",
       "../windows/driver/QuarborVirtualMicrophoneDriver.sys": "driver/QuarborVirtualMicrophoneDriver.sys",
       "../windows/driver/License": "driver/License",
-      "../vendor/interception/interception.dll": "vendor/interception/interception.dll",
-      "../vendor/interception/install-interception.exe": "vendor/interception/install-interception.exe",
-      "../vendor/interception/LICENSE-LGPL-3.0.txt": "vendor/interception/LICENSE-LGPL-3.0.txt",
-      "../vendor/interception/SOURCE.md": "vendor/interception/SOURCE.md",
-      "../vendor/interception/licenses/Interception.pdf": "vendor/interception/licenses/Interception.pdf",
-      "../vendor/interception/licenses/Interception API.pdf": "vendor/interception/licenses/Interception API.pdf",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     },
     "windows": {

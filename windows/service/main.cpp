@@ -320,6 +320,10 @@ private:
         // service will close and retry this endpoint during reconciliation.
         QUARBOR_SWITCH_CONTROL disabled{0}; DWORD ignored = 0;
         Ioctl(IOCTL_QUARBOR_SET_INPUT_BLOCK, &disabled, sizeof(disabled), nullptr, 0, ignored);
+        // The RPC client may remain connected while this endpoint is removed.
+        // Publish an empty report so the desktop releases held synthetic
+        // output before the next endpoint is reconciled.
+        if (reportCallback_) reportCallback_(instance_, std::vector<std::uint8_t>{});
         valid_ = false;
         LogMessage(L"HID reader stopped; device=" + instance_);
     }
