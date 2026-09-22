@@ -90,6 +90,7 @@ import {
   skipSetupStep,
 } from '../setupModel'
 import type { DriverActionKind, DriverKind, SetupState, SetupStepId } from '../setupModel'
+import { windowsDeviceDisplayName } from '../windowsService'
 import type { WindowsDevicesProbe, WindowsServiceAction, WindowsServiceStatus } from '../windowsService'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -1448,7 +1449,7 @@ function AppController() {
   } : {
     title: '遥控器状态',
     rows: [
-      { label: '设备', value: platform === 'windows' ? windowsDevices?.device?.descriptionName || (windowsDevices?.serviceAvailable === false ? '无法访问到服务' : '未获取到设备') : '小米遥控器 RC003' },
+      { label: '设备', value: platform === 'windows' ? windowsDeviceDisplayName(windowsDevices) : '小米遥控器 RC003' },
       { label: '连接', value: setupState.device.status === 'error' ? setupState.device.message ?? '获取异常' : setupState.device.status === 'connected' ? '已连接' : '未连接', tone: setupState.device.status === 'connected' ? 'ready' : undefined },
       { label: '电量', value: <BatteryIndicator level={displayedBatteryLevel} /> },
     ],

@@ -43,6 +43,21 @@ export type WindowsDevicesProbe = {
   error: string | null
 }
 
+/**
+ * Formats the device row in the mapping status card.
+ *
+ * `descriptionName` is best-effort metadata. The service can return a real
+ * HID device while Bluetooth/GATT name discovery is unavailable, so presence
+ * must be determined from `device`, not from the display name.
+ */
+export function windowsDeviceDisplayName(probe: WindowsDevicesProbe | null): string {
+  if (!probe) return '检测中'
+  if (!probe.serviceAvailable) return '无法访问到服务'
+  if (probe.error) return '获取异常'
+  if (probe.device) return probe.device.descriptionName || '小米遥控器 RC003'
+  return '未获取到设备'
+}
+
 export const serviceStateLabels: Record<WindowsServiceState, string> = {
   notInstalled: '未安装',
   stopped: '已停止',
