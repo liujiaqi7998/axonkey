@@ -14,6 +14,7 @@ import { RedoCircle, UndoCircle } from 'reicon-react'
 import {
   createBehavior,
   createDefaultBehaviorMap,
+  defaultCursorDistance,
   createMappingExport,
   moveBehavior,
   parseMappingImport,
@@ -22,7 +23,9 @@ import {
 import type { Behavior, BehaviorMap, ButtonId, InputId, TriggerType } from '../behaviorModel'
 import { behaviorHistoryReducer, createBehaviorHistory } from '../behaviorHistory'
 import {
+  isRightModifierPreset,
   keyDisplayName,
+  rightModifierKeys,
   behaviorFromCapturedKey,
   buttons,
   detectBrowserPlatform,
@@ -687,6 +690,7 @@ function AppController() {
   }
 
   const applyCommonBehavior = (preset: CommonBehaviorPreset) => {
+    if (isRightModifierPreset(preset)) return replaceWithKey(rightModifierKeys[preset])
     switch (preset) {
       case 'wheelUp':
       case 'wheelDown':
@@ -699,6 +703,13 @@ function AppController() {
       case 'mouseRight':
         if (platform !== 'windows' && platform !== 'macos') return
         { const button = ({ mouseLeft: 'left', mouseRight: 'right' } as const)[preset]; replaceWithCommonBehavior([createBehavior({ type: 'mouse', button })]); showBehaviorToast(button === 'left' ? '已设为鼠标左键' : '已设为鼠标右键') }
+        return
+      case 'cursorUp':
+      case 'cursorDown':
+      case 'cursorLeft':
+      case 'cursorRight':
+        if (platform !== 'windows' && platform !== 'macos') return
+        { const direction = ({ cursorUp: 'up', cursorDown: 'down', cursorLeft: 'left', cursorRight: 'right' } as const)[preset]; replaceWithCommonBehavior([createBehavior({ type: 'cursorMove', direction })]); showBehaviorToast(`已设为${({ up: '光标上移', down: '光标下移', left: '光标左移', right: '光标右移' })[direction]} ${defaultCursorDistance} 像素`) }
         return
       case 'original':
         replaceWithCommonBehavior([])

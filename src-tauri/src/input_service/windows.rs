@@ -1,7 +1,10 @@
 //! Windows input backend. The desktop process consumes complete HID reports
 //! from AxonkeyService over RPC; it does not open Bluetooth, HID, or raw filter
 //! device handles.
-use super::{InputServiceStatus, NativeBehavior, NativeSettings, TriggerBehaviors, WheelDirection};
+use super::{
+    cursor_delta, repeatable_click, InputServiceStatus, NativeBehavior, NativeSettings,
+    RepeatableClick, TriggerBehaviors, WheelDirection,
+};
 #[cfg(not(test))]
 use serde::Serialize;
 use std::{
@@ -353,7 +356,7 @@ struct PressState {
     long_fired: bool,
     long_repeat_due_at: Option<Instant>,
     held_outputs: Vec<(u16, bool)>,
-    wheel_repeat: Option<(i32, bool)>,
+    click_repeat: Option<(RepeatableClick, Instant)>,
     next_repeat_at: Instant,
     original_virtual_key: u16,
     passthrough: bool,
@@ -427,17 +430,17 @@ impl InputState {
                 long_fired: false,
                 long_repeat_due_at: None,
                 held_outputs: Vec::new(),
-                wheel_repeat: None,
+                click_repeat: None,
                 next_repeat_at: now + Duration::from_millis(REPEAT_INITIAL_MS),
                 original_virtual_key: source.original_virtual_key,
                 passthrough: true,
             });
             return;
         }
-        let wheel_repeat = continuous_click_wheel(&triggers);
-        if let Some((delta, horizontal)) = wheel_repeat {
-            send_wheel_with_axis(delta, horizontal);
-        }
+        let click_repeat = repeatable_click(&triggers).map(|action| {
+            execute_repeatable_click(action);
+            (action, now + Duration::from_millis(400))
+        });
         let held_outputs = continuous_click_chord(&triggers)
             .map(|keys| press_chord(&keys))
             .unwrap_or_default();
@@ -446,9 +449,9 @@ impl InputState {
             long_fired: false,
             long_repeat_due_at: None,
             held_outputs,
-            wheel_repeat,
+            click_repeat,
             next_repeat_at: now
-                + Duration::from_millis(if wheel_repeat.is_some() {
+                + Duration::from_millis(if click_repeat.is_some() {
                     400
                 } else {
                     REPEAT_INITIAL_MS
@@ -478,7 +481,7 @@ impl InputState {
             send_original_key_up(press.original_virtual_key);
             return;
         }
-        if press.wheel_repeat.is_some() {
+        if press.click_repeat.is_some() {
             return;
         }
         if !press.held_outputs.is_empty() {
@@ -534,7 +537,7 @@ impl InputState {
                             release_chord(&press.held_outputs);
                             press.held_outputs.clear();
                         }
-                        press.wheel_repeat = None;
+                        press.click_repeat = None;
                         press.long_repeat_due_at = None;
                         send_original_key_down(press.original_virtual_key);
                         press.passthrough = true;
@@ -557,15 +560,15 @@ impl InputState {
                     }
                     continue;
                 }
-                if let Some((delta, horizontal)) = press.wheel_repeat {
-                    if continuous_click_wheel(&triggers) == Some((delta, horizontal)) {
-                        if now >= press.next_repeat_at {
-                            send_wheel_with_axis(delta, horizontal);
-                            press.next_repeat_at = now + Duration::from_millis(80);
+                if let Some((action, due_at)) = press.click_repeat.as_mut() {
+                    if repeatable_click(&triggers) == Some(*action) {
+                        if now >= *due_at {
+                            execute_repeatable_click(*action);
+                            *due_at = now + Duration::from_millis(80);
                         }
                         continue;
                     }
-                    press.wheel_repeat = None;
+                    press.click_repeat = None;
                 }
                 if now.duration_since(press.started_at) >= Duration::from_millis(LONG_PRESS_MS)
                     && !press.long_fired
@@ -673,17 +676,24 @@ fn continuous_click_chord(triggers: &TriggerBehaviors) -> Option<Vec<u16>> {
     behavior_chord(first)
 }
 fn continuous_click_wheel(triggers: &TriggerBehaviors) -> Option<(i32, bool)> {
-    if has_enabled(&triggers.double_click) || has_enabled(&triggers.long_press) {
-        return None;
-    }
-    let mut values = triggers.click.iter().filter(|v| v.enabled());
-    let first = values.next()?;
-    if values.next().is_some() {
-        return None;
-    }
-    match first {
-        NativeBehavior::Wheel { direction, .. } => Some(wheel_delta(*direction)),
+    match repeatable_click(triggers) {
+        Some(RepeatableClick::Wheel(direction)) => Some(wheel_delta(direction)),
         _ => None,
+    }
+}
+fn execute_repeatable_click(action: RepeatableClick) {
+    match action {
+        RepeatableClick::Wheel(direction) => {
+            let (delta, horizontal) = wheel_delta(direction);
+            send_wheel_with_axis(delta, horizontal)
+        }
+        RepeatableClick::CursorMove {
+            direction,
+            distance,
+        } => {
+            let (dx, dy) = cursor_delta(direction, distance);
+            send_mouse_move(dx, dy);
+        }
     }
 }
 fn wheel_delta(direction: WheelDirection) -> (i32, bool) {
@@ -713,6 +723,14 @@ fn execute_behaviors(values: &[NativeBehavior]) {
                 let (delta, horizontal) = wheel_delta(*direction);
                 send_wheel_with_axis(delta, horizontal);
             }
+            NativeBehavior::CursorMove {
+                direction,
+                distance,
+                ..
+            } => {
+                let (dx, dy) = cursor_delta(*direction, *distance);
+                send_mouse_move(dx, dy);
+            }
             NativeBehavior::Paste { text, .. } => send_unicode_text(text),
             NativeBehavior::Delay { ms, .. } => {
                 thread::sleep(Duration::from_millis((*ms).min(300_000)))
@@ -728,6 +746,14 @@ pub(super) fn execute_mouse_behavior(behavior: &NativeBehavior, hold_ms: u64) {
         NativeBehavior::Wheel { direction, .. } => {
             let (delta, horizontal) = wheel_delta(*direction);
             send_wheel_with_axis(delta, horizontal)
+        }
+        NativeBehavior::CursorMove {
+            direction,
+            distance,
+            ..
+        } => {
+            let (dx, dy) = cursor_delta(*direction, *distance);
+            send_mouse_move(dx, dy);
         }
         NativeBehavior::Mouse { button, .. } => send_mouse_click(*button),
         NativeBehavior::Paste { text, .. } => send_unicode_text(text),
@@ -859,6 +885,7 @@ fn behavior_chord(behavior: &NativeBehavior) -> Option<Vec<u16>> {
             (!chord.is_empty()).then_some(chord)
         }
         NativeBehavior::Wheel { .. }
+        | NativeBehavior::CursorMove { .. }
         | NativeBehavior::Mouse { .. }
         | NativeBehavior::Paste { .. }
         | NativeBehavior::Delay { .. }
@@ -1121,6 +1148,60 @@ fn wheel_input(delta: i32, horizontal: bool) -> Input {
 thread_local! {
     static MOUSE_KEY_BATCHES: std::cell::RefCell<Vec<Vec<(u16, u32)>>> = const { std::cell::RefCell::new(Vec::new()) };
     static WHEEL_EVENTS: std::cell::RefCell<Vec<i32>> = const { std::cell::RefCell::new(Vec::new()) };
+    static MOUSE_MOVES: std::cell::RefCell<Vec<(i32, i32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(not(test))]
+#[repr(C)]
+struct WinPoint {
+    x: i32,
+    y: i32,
+}
+
+fn send_mouse_move(dx: i32, dy: i32) {
+    #[cfg(test)]
+    {
+        let _ = (dx, dy);
+        MOUSE_MOVES.with(|events| events.borrow_mut().push((dx, dy)));
+    }
+    #[cfg(not(test))]
+    {
+        let mut point = WinPoint { x: 0, y: 0 };
+        if unsafe { GetCursorPos(&mut point) } == 0 {
+            log::warn!(target: "axonkey::input", "Cursor position unavailable: {}", std::io::Error::last_os_error());
+            return;
+        }
+        let vx = unsafe { GetSystemMetrics(76) };
+        let vy = unsafe { GetSystemMetrics(77) };
+        let vw = unsafe { GetSystemMetrics(78) }.max(1);
+        let vh = unsafe { GetSystemMetrics(79) }.max(1);
+        let x = (point.x + dx).clamp(vx, vx + vw - 1);
+        let y = (point.y + dy).clamp(vy, vy + vh - 1);
+        let range_x = (vw - 1).max(1) as i64;
+        let range_y = (vh - 1).max(1) as i64;
+        let abs_x = ((x - vx) as i64 * 65535 / range_x) as i32;
+        let abs_y = ((y - vy) as i64 * 65535 / range_y) as i32;
+        const MOUSEEVENTF_MOVE: u32 = 0x0001;
+        const MOUSEEVENTF_ABSOLUTE: u32 = 0x8000;
+        const MOUSEEVENTF_VIRTUALDESK: u32 = 0x4000;
+        let input = Input {
+            kind: 0,
+            value: InputValue {
+                mouse: MouseInput {
+                    dx: abs_x,
+                    dy: abs_y,
+                    mouse_data: 0,
+                    flags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                    time: 0,
+                    extra_info: 0,
+                },
+            },
+        };
+        let sent = unsafe { SendInput(1, &input, std::mem::size_of::<Input>() as i32) };
+        if sent != 1 {
+            log::warn!(target: "axonkey::input", "Cursor move injection failed: dx={dx}, dy={dy}, error={}", std::io::Error::last_os_error());
+        }
+    }
 }
 
 fn send_wheel_with_axis(delta: i32, horizontal: bool) {
@@ -1215,6 +1296,10 @@ fn send_unicode_text(text: &str) {
 extern "system" {
     fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
     fn SendInput(input_count: u32, inputs: *const Input, input_size: i32) -> u32;
+    #[cfg(not(test))]
+    fn GetCursorPos(point: *mut WinPoint) -> i32;
+    #[cfg(not(test))]
+    fn GetSystemMetrics(index: i32) -> i32;
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1226,6 +1311,18 @@ unsafe fn MapVirtualKeyW(_code: u32, _map_type: u32) -> u32 {
 #[cfg(not(target_os = "windows"))]
 #[allow(non_snake_case)]
 unsafe fn SendInput(_input_count: u32, _inputs: *const Input, _input_size: i32) -> u32 {
+    0
+}
+
+#[cfg(all(not(target_os = "windows"), not(test)))]
+#[allow(non_snake_case)]
+unsafe fn GetCursorPos(_point: *mut WinPoint) -> i32 {
+    0
+}
+
+#[cfg(all(not(target_os = "windows"), not(test)))]
+#[allow(non_snake_case)]
+unsafe fn GetSystemMetrics(_index: i32) -> i32 {
     0
 }
 
@@ -1494,6 +1591,33 @@ mod tests {
             "type":"wheel", "direction":"left"
         }))
         .is_ok());
+        let mut cursor: TriggerBehaviors = serde_json::from_value(serde_json::json!({
+            "click": [{"type":"cursorMove", "direction":"up"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            repeatable_click(&cursor),
+            Some(RepeatableClick::CursorMove {
+                direction: WheelDirection::Up,
+                distance: 50,
+            })
+        );
+        cursor.double_click.push(cursor.click[0].clone());
+        assert_eq!(repeatable_click(&cursor), None);
+    }
+
+    #[test]
+    fn cursor_move_injects_relative_delta_from_current_position() {
+        MOUSE_MOVES.with(|events| events.borrow_mut().clear());
+        execute_mouse_behavior(
+            &NativeBehavior::CursorMove {
+                enabled: true,
+                direction: WheelDirection::Left,
+                distance: 20,
+            },
+            0,
+        );
+        MOUSE_MOVES.with(|events| assert_eq!(*events.borrow(), vec![(-20, 0)]));
     }
     #[test]
     fn parses_bracket_and_shortcuts() {

@@ -145,3 +145,11 @@ temp/
 src-tauri/resources/macos/*.driver/
 src-tauri/resources/macos/*.pkg
 src-tauri/gen/schemas/macOS-schema.json
+
+# Generated frontend/config artifacts and local secrets
+*.tsbuildinfo
+vite.config.js
+!website/vite.config.js
+vite.config.d.ts
+secrets
+src-tauri/gen/schemas/
