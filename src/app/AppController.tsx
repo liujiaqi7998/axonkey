@@ -1154,7 +1154,7 @@ function AppController() {
         5_000,
         '检测超时，请点击“重新检测”再试',
       )
-      const outputName = platform === 'macos' ? 'MiRemoteV 2ch' : 'CABLE Input'
+      const outputName = platform === 'macos' ? 'MiRemoteV 2ch' : 'Quarbor Virtual Microphone'
       const stateMessage = probe.forwarding
         ? `正在把 RC003 麦克风音频转发到 ${outputName}。`
         : probe.state === 'ready'
