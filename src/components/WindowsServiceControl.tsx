@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Download, RotateCcw, Trash2 } from 'lucide-react'
+import { Download, Radio, RotateCcw, Trash2 } from 'lucide-react'
 import { SettingsHelp } from './SettingsHelp'
 import { serviceStateLabels } from '../windowsService'
 import type { WindowsServiceAction, WindowsServiceStatus } from '../windowsService'
@@ -103,25 +103,27 @@ export function WindowsServiceControl({ nativeRuntime, disabled, onBusyChange, o
   const ActionIcon = serviceRunning ? Trash2 : Download
   const actionDisabled = !nativeRuntime || disabled || pending !== null || !status
 
-  return <section className="setup-service-panel" aria-labelledby="setup-service-title">
-    <div className="setup-service-heading">
-      <div className="setup-service-title">
-        <h3 id="setup-service-title">AxonkeyService 后台服务</h3>
-        <SettingsHelp id="setup-service-help" label="AxonkeyService 后台服务">服务负责 Windows 上的遥控器设备管理和语音接收。按钮会根据 RPC 状态在安装和卸载之间切换。安装会在必要时创建服务并立即启动；卸载会先停止服务，再删除服务和文件。</SettingsHelp>
+  return <section className={`driver-setup-item setup-service-item ${status?.state ?? 'unknown'}`} aria-labelledby="setup-service-title">
+    <div className="driver-setup-heading">
+      <span className="driver-setup-icon"><Radio size={18} /></span>
+      <div className="setup-service-heading-copy">
+        <div className="setup-service-title">
+          <h3 id="setup-service-title">AxonkeyService 后台服务</h3>
+        </div>
+        <p>通过 RPC 连接确认服务是否运行</p>
       </div>
-      <button type="button" className="setup-service-refresh" aria-label="刷新服务状态" title="刷新服务状态" disabled={!nativeRuntime || checking || pending !== null} onClick={() => void refresh()}><RotateCcw size={15} /></button>
+      <span className="driver-status-chip"><span className="setup-status-dot" /> {stateLabel}</span>
     </div>
-    <div className="setup-service-status" aria-live="polite">
-      <span className={`setup-service-badge ${status?.state ?? 'unknown'}`}><i aria-hidden="true" />{stateLabel}</span>
-    </div>
-    <div className="setup-service-rpc" aria-live="polite">
-      <span>RPC 连接：{rpcLabel}</span>
+    <div className="driver-suite-status" aria-live="polite">
+      <span><Radio size={15} /> RPC 连接：{rpcLabel}</span>
       {rpcInfo && <span>{rpcInfo.name} v{rpcInfo.version} · {rpcInfo.protocolVersion} · {rpcInfo.pipeName}</span>}
     </div>
-    <div className="setup-service-actions">
-      <button type="button" className={`dialog-secondary ${serviceRunning ? 'danger' : ''}`} aria-label={`${actionLabel}服务`} disabled={actionDisabled} onClick={() => void run(action)}><ActionIcon size={14} />{pending === action ? pendingLabel : actionLabel}</button>
+    {error
+      ? <p className="driver-setup-message setup-service-message error" role="alert">{error}</p>
+      : <p className={`driver-setup-message setup-service-message ${!pending && rpcError ? 'error' : ''}`} role="status">{pending ? '正在请求管理员权限，请在 Windows 授权窗口中允许。' : rpcError || message}</p>}
+    <div className="driver-setup-actions">
+      <button type="button" className={`dialog-secondary ${serviceRunning ? 'danger' : ''}`} aria-label={`${actionLabel}服务`} disabled={actionDisabled} onClick={() => void run(action)}><ActionIcon size={14} /> {pending === action ? pendingLabel : actionLabel}</button>
+      <button type="button" className="dialog-secondary" aria-label="刷新服务状态" disabled={!nativeRuntime || checking || pending !== null} onClick={() => void refresh()}><RotateCcw size={14} /> {checking ? '检测中…' : '重新检测'}</button>
     </div>
-    {error && <p className="setup-service-feedback error" role="alert">{error}</p>}
-    {!error && <p className={`setup-service-feedback ${!pending && rpcError ? 'error' : ''}`} role="status">{pending ? '正在请求管理员权限，请在 Windows 授权窗口中允许。' : rpcError || message}</p>}
   </section>
 }
