@@ -19,6 +19,7 @@ struct ServiceInfo {
 };
 struct ServiceStatus { bool enabled = true; };
 struct SetServiceStatus { bool enabled = true; };
+struct SetServiceEnable { bool enabled = true; };
 struct SetAudioGain { std::int32_t gainDb = 0; };
 struct OperationResult { bool success = false; std::string error; };
 struct Device {
@@ -50,6 +51,7 @@ bool Parse(const Bytes& bytes, EventEnvelope& value);
 bool Parse(const Bytes& bytes, ServiceInfo& value);
 bool Parse(const Bytes& bytes, ServiceStatus& value);
 bool Parse(const Bytes& bytes, SetServiceStatus& value);
+bool Parse(const Bytes& bytes, SetServiceEnable& value);
 bool Parse(const Bytes& bytes, OperationResult& value);
 
 Bytes Serialize(const Request& value);
@@ -58,6 +60,7 @@ Bytes Serialize(const EventEnvelope& value);
 Bytes Serialize(const ServiceInfo& value);
 Bytes Serialize(const ServiceStatus& value);
 Bytes Serialize(const SetServiceStatus& value);
+Bytes Serialize(const SetServiceEnable& value);
 Bytes Serialize(const OperationResult& value);
 Bytes Serialize(const DeviceList& value);
 Bytes Serialize(const VoiceStatus& value);

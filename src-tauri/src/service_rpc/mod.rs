@@ -265,6 +265,33 @@ impl ServiceConnection {
         }
     }
 
+    pub async fn set_service_enable(&self, enabled: bool) -> io::Result<()> {
+        let mut pipe = open_pipe().await?;
+        let result: proto::OperationResult = tokio::time::timeout(
+            PROBE_TIMEOUT,
+            call(
+                &mut pipe,
+                next_request_id(),
+                "SetServiceEnable",
+                &proto::SetServiceEnableRequest { enabled },
+            ),
+        )
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SetServiceEnable timed out"))??;
+        if result.success {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                if result.error.is_empty() {
+                    "AxonkeyService rejected the startup setting change"
+                } else {
+                    result.error.as_str()
+                },
+            ))
+        }
+    }
+
     pub async fn get_audio_gain(&self) -> io::Result<i16> {
         let mut pipe = open_pipe().await?;
         let info = tokio::time::timeout(PROBE_TIMEOUT, request_service_info(&mut pipe))

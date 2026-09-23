@@ -36,6 +36,9 @@ PB_BIND(axonkey_service_v1_ServiceStatus, axonkey_service_v1_ServiceStatus, AUTO
 PB_BIND(axonkey_service_v1_SetServiceStatusRequest, axonkey_service_v1_SetServiceStatusRequest, AUTO)
 
 
+PB_BIND(axonkey_service_v1_SetServiceEnableRequest, axonkey_service_v1_SetServiceEnableRequest, AUTO)
+
+
 PB_BIND(axonkey_service_v1_SetAudioGainRequest, axonkey_service_v1_SetAudioGainRequest, AUTO)
 
 

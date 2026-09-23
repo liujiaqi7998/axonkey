@@ -377,8 +377,6 @@ enum WindowsServiceAction {
     Uninstall,
     Start,
     Stop,
-    EnableAutostart,
-    DisableAutostart,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -490,8 +488,6 @@ fn run_windows_service_action(
         WindowsServiceAction::Uninstall => "Uninstall",
         WindowsServiceAction::Start => "Start",
         WindowsServiceAction::Stop => "Stop",
-        WindowsServiceAction::EnableAutostart => "EnableAutostart",
-        WindowsServiceAction::DisableAutostart => "DisableAutostart",
     };
     let mut command = std::process::Command::new(powershell_path());
     command
@@ -635,21 +631,10 @@ async fn set_windows_service_autostart(app: tauri::AppHandle, enabled: bool) -> 
     #[cfg(target_os = "windows")]
     {
         use tauri::Manager;
-
-        let resource_dir = app
-            .path()
-            .resource_dir()
-            .map_err(|error| format!("Cannot resolve bundled resources: {error}"))?;
-        let action = if enabled {
-            WindowsServiceAction::EnableAutostart
-        } else {
-            WindowsServiceAction::DisableAutostart
-        };
-        tauri::async_runtime::spawn_blocking(move || {
-            run_windows_service_action(&resource_dir, action).map(|_| ())
-        })
-        .await
-        .map_err(|error| format!("服务启动设置更新失败：{error}"))??;
+        app.state::<service_rpc::ServiceConnection>()
+            .set_service_enable(enabled)
+            .await
+            .map_err(|error| format!("无法更新 AxonkeyService 开机启动设置：{error}"))?;
         return Ok(());
     }
     #[cfg(not(target_os = "windows"))]

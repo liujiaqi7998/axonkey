@@ -403,6 +403,15 @@ void RpcServer::ClientLoop(const std::shared_ptr<Client>& client) {
                 response.error = result.error;
                 response.payload = axonkey::rpc::Serialize(result);
             } else response.error = "invalid SetServiceStatus protobuf payload";
+        } else if (request.method == "SetServiceEnable") {
+            axonkey::rpc::SetServiceEnable enable;
+            response.success = axonkey::rpc::Parse(request.payload, enable);
+            if (response.success) {
+                auto result = handlers_.setServiceEnable(enable.enabled);
+                response.success = result.success;
+                response.error = result.error;
+                response.payload = axonkey::rpc::Serialize(result);
+            } else response.error = "invalid SetServiceEnable protobuf payload";
         } else if (request.method == "SetAudioGain") {
             axonkey::rpc::SetAudioGain gain;
             response.success = axonkey::rpc::Parse(request.payload, gain);

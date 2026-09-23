@@ -80,7 +80,7 @@ export function AutostartControl({ supported, windows }: AutostartControlProps) 
       <span className="settings-form-label">启动：</span>
       <div className="settings-form-control">
         <label className="settings-checkbox"><input type="checkbox" checked={enabled === true} disabled={!supported || busy || enabled === null} onChange={() => void toggle()} />开机自启</label>
-        <SettingsHelp id="autostart-description" label="开机自启">{supported ? windows ? '登录电脑后在后台启动 Axonkey，并将 AxonkeyService 设为自动启动；关闭后服务改为手动启动。更改服务设置时 Windows 会请求管理员授权。' : '登录电脑后在后台启动 Axonkey，不会自动打开窗口。' : '请在 Windows 或 macOS 桌面应用中设置。'}</SettingsHelp>
+        <SettingsHelp id="autostart-description" label="开机自启">{supported ? windows ? '登录电脑后在后台启动 Axonkey，并通过 AxonkeyService RPC 将服务设为自动启动；关闭后改为手动启动。' : '登录电脑后在后台启动 Axonkey，不会自动打开窗口。' : '请在 Windows 或 macOS 桌面应用中设置。'}</SettingsHelp>
         <span className="settings-autostart-status" role="status">{busy ? '正在同步…' : ''}</span>
       </div>
     </div>

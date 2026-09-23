@@ -71,6 +71,12 @@ void TestServiceStatusRoundTrip() {
     axonkey::rpc::SetServiceStatus outRequest;
     Expect(axonkey::rpc::Parse(bytes, outRequest), "set service status parse");
     ExpectEq(outRequest.enabled, true, "set service status enabled");
+
+    axonkey::rpc::SetServiceEnable enable{false};
+    bytes = axonkey::rpc::Serialize(enable);
+    axonkey::rpc::SetServiceEnable outEnable;
+    Expect(axonkey::rpc::Parse(bytes, outEnable), "set service enable parse");
+    ExpectEq(outEnable.enabled, false, "set service enable disabled");
 }
 
 void TestDeviceListRoundTrip() {

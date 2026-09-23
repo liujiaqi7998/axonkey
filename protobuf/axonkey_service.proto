@@ -12,6 +12,7 @@ service AxonkeyService {
   rpc GetServiceInfo(ServiceInfoRequest) returns (ServiceInfo);
   rpc GetServiceStatus(ServiceStatusRequest) returns (ServiceStatus);
   rpc SetServiceStatus(SetServiceStatusRequest) returns (OperationResult);
+  rpc SetServiceEnable(SetServiceEnableRequest) returns (OperationResult);
   rpc SetAudioGain(SetAudioGainRequest) returns (OperationResult);
   rpc GetDevices(DeviceListRequest) returns (DeviceList);
   rpc GetVoiceStatus(VoiceStatusRequest) returns (VoiceStatus);
@@ -49,6 +50,7 @@ message ServiceInfo {
 
 message ServiceStatus { bool enabled = 1; }
 message SetServiceStatusRequest { bool enabled = 1; }
+message SetServiceEnableRequest { bool enabled = 1; }
 
 message SetAudioGainRequest { int32 gain_db = 1; }
 message OperationResult { bool success = 1; string error = 2; }

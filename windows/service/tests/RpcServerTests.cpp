@@ -62,13 +62,14 @@ HANDLE OpenPipe(const std::wstring& name) {
 }
 
 bool ExercisePipe(HANDLE pipe, axonkey_service::RpcServer& server, const std::string& name) {
+    Bytes frame;
+    axonkey::rpc::Response acknowledgement;
     for (std::uint64_t id = 1; id <= 5; ++id) {
         if (!WriteFrame(pipe, axonkey::rpc::Serialize(axonkey::rpc::Request{
                 id, "GetServiceInfo", {}}))) return false;
         // Force the server's request thread to enter its next read before
         // consuming the response. A synchronous pipe handle deadlocks here.
         std::this_thread::sleep_for(std::chrono::milliseconds(30));
-        Bytes frame;
         axonkey::rpc::Response response;
         axonkey::rpc::ServiceInfo info;
         if (!ReadFrame(pipe, frame) || !axonkey::rpc::Parse(frame, response) ||
@@ -77,12 +78,16 @@ bool ExercisePipe(HANDLE pipe, axonkey_service::RpcServer& server, const std::st
     }
 
     if (!WriteFrame(pipe, axonkey::rpc::Serialize(axonkey::rpc::Request{
-            6, "Subscribe", axonkey::rpc::Serialize(axonkey::rpc::Subscribe{true, false, false})})))
+            6, "SetServiceEnable", axonkey::rpc::Serialize(axonkey::rpc::SetServiceEnable{false})})))
         return false;
-    Bytes frame;
-    axonkey::rpc::Response acknowledgement;
     if (!ReadFrame(pipe, frame) || !axonkey::rpc::Parse(frame, acknowledgement) ||
             acknowledgement.requestId != 6 || !acknowledgement.success) return false;
+
+    if (!WriteFrame(pipe, axonkey::rpc::Serialize(axonkey::rpc::Request{
+            7, "Subscribe", axonkey::rpc::Serialize(axonkey::rpc::Subscribe{true, false, false})})))
+        return false;
+    if (!ReadFrame(pipe, frame) || !axonkey::rpc::Parse(frame, acknowledgement) ||
+            acknowledgement.requestId != 7 || !acknowledgement.success) return false;
     server.PublishKeyboard("rc003", {0x01, 0x02});
     axonkey::rpc::EventEnvelope event;
     return ReadFrame(pipe, frame) && axonkey::rpc::Parse(frame, event) && event.type == "keyboard";
@@ -97,6 +102,7 @@ int main() {
     axonkey_service::RpcServer server({
         [name] { return axonkey::rpc::ServiceInfo{"AxonkeyService", "test", "axonkey.service.v1", name}; },
         [] { return axonkey::rpc::ServiceStatus{true}; },
+        [](bool) { return axonkey::rpc::OperationResult{true, {}}; },
         [](bool) { return axonkey::rpc::OperationResult{true, {}}; },
         [](std::int32_t) { return axonkey::rpc::OperationResult{true, {}}; },
         [] { return axonkey::rpc::DeviceList{}; },

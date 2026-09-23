@@ -244,6 +244,7 @@ RPC 端点固定为 `\\.\pipe\AxonkeyService.v1`，定义在 [`RpcServer.h:30`](
 
 - `ServiceInfo()`：服务名、版本 `0.3.1`、协议名和管道名。
 - `GetServiceStatus()` / `SetServiceStatus()`：读取或动态切换 `Enabled` 总开关；启用会立即协调设备，禁用会停止端点/语音线程并解绑过滤器，结果持久化到注册表。
+- `SetServiceEnable()`：由桌面端开机自启设置调用；服务进程通过 SCM 将 `AxonkeyService` 的启动类型设置为 `Automatic` 或 `Manual`。
 - `SetAudioGain()`：[`main.cpp:376`](main.cpp#L376)，限制到 `-30..30 dB`，更新已有 `VoiceReceiver` 并持久化。
 - `DeviceList()`：[`main.cpp:384`](main.cpp#L384)，返回挂载状态、端点路径、连接状态和两个 HID 开关；同时尽力读取电量（未知时不设置）和设备描述名称（未知时为空）。
 - `VoiceStatus()`：[`main.cpp:401`](main.cpp#L401)，从现有语音线程选取有意义的连接/活动状态。

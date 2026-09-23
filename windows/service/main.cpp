@@ -366,6 +366,7 @@ public:
             [this] { return ServiceInfo(); },
             [this] { return ServiceStatus(); },
             [this](bool enabled) { return SetServiceEnabled(enabled); },
+            [this](bool enabled) { return SetServiceAutostart(enabled); },
             [this](std::int32_t gain) { return SetAudioGain(gain); },
             [this] { return DeviceList(); },
             [this] { return VoiceStatus(); },
@@ -557,6 +558,35 @@ private:
             return {false, "Enabled could not be saved"};
         cv_.notify_all();
         LogMessage(std::wstring(L"Service device processing ") + (enabled ? L"enabled" : L"disabled"));
+        return {true, {}};
+    }
+    axonkey::rpc::OperationResult SetServiceAutostart(bool enabled) {
+        const auto manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+        if (!manager) {
+            const auto error = GetLastError();
+            LogWin32Error(L"Opening Service Control Manager for startup configuration failed", error);
+            return {false, "OpenSCManager failed: Win32=" + std::to_string(error)};
+        }
+        const auto service = OpenServiceW(manager, kServiceName, SERVICE_CHANGE_CONFIG);
+        if (!service) {
+            const auto error = GetLastError();
+            CloseServiceHandle(manager);
+            LogWin32Error(L"Opening AxonkeyService for startup configuration failed", error);
+            return {false, "OpenService failed: Win32=" + std::to_string(error)};
+        }
+        const auto startType = enabled ? SERVICE_AUTO_START : SERVICE_DEMAND_START;
+        const auto changed = ChangeServiceConfigW(
+            service, SERVICE_NO_CHANGE, startType, SERVICE_NO_CHANGE,
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+        const auto error = changed ? ERROR_SUCCESS : GetLastError();
+        CloseServiceHandle(service);
+        CloseServiceHandle(manager);
+        if (!changed) {
+            LogWin32Error(L"Changing AxonkeyService startup configuration failed", error);
+            return {false, "ChangeServiceConfig failed: Win32=" + std::to_string(error)};
+        }
+        LogMessage(std::wstring(L"AxonkeyService startup set to ") +
+            (enabled ? L"Automatic" : L"Manual"));
         return {true, {}};
     }
     axonkey::rpc::OperationResult SetAudioGain(std::int32_t gain) {

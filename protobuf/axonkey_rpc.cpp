@@ -260,6 +260,16 @@ bool Parse(const Bytes& bytes, SetServiceStatus& value) {
     return true;
 }
 
+bool Parse(const Bytes& bytes, SetServiceEnable& value) {
+    value = {};
+    axonkey_service_v1_SetServiceEnableRequest msg = axonkey_service_v1_SetServiceEnableRequest_init_zero;
+    pb_istream_t stream = pb_istream_from_buffer(
+        bytes.empty() ? nullptr : bytes.data(), bytes.size());
+    if (!pb_decode(&stream, axonkey_service_v1_SetServiceEnableRequest_fields, &msg)) return false;
+    value.enabled = msg.enabled;
+    return true;
+}
+
 bool Parse(const Bytes& bytes, OperationResult& value) {
     value = {};
     axonkey_service_v1_OperationResult msg = axonkey_service_v1_OperationResult_init_zero;
@@ -328,6 +338,18 @@ Bytes Serialize(const SetServiceStatus& value) {
     Bytes out(size);
     pb_ostream_t stream = pb_ostream_from_buffer(out.empty() ? nullptr : out.data(), out.size());
     if (!pb_encode(&stream, axonkey_service_v1_SetServiceStatusRequest_fields, &msg)) return {};
+    out.resize(stream.bytes_written);
+    return out;
+}
+
+Bytes Serialize(const SetServiceEnable& value) {
+    axonkey_service_v1_SetServiceEnableRequest msg = axonkey_service_v1_SetServiceEnableRequest_init_zero;
+    msg.enabled = value.enabled;
+    size_t size = 0;
+    if (!pb_get_encoded_size(&size, axonkey_service_v1_SetServiceEnableRequest_fields, &msg)) return {};
+    Bytes out(size);
+    pb_ostream_t stream = pb_ostream_from_buffer(out.empty() ? nullptr : out.data(), out.size());
+    if (!pb_encode(&stream, axonkey_service_v1_SetServiceEnableRequest_fields, &msg)) return {};
     out.resize(stream.bytes_written);
     return out;
 }

@@ -60,6 +60,10 @@ typedef struct _axonkey_service_v1_SetServiceStatusRequest {
     bool enabled;
 } axonkey_service_v1_SetServiceStatusRequest;
 
+typedef struct _axonkey_service_v1_SetServiceEnableRequest {
+    bool enabled;
+} axonkey_service_v1_SetServiceEnableRequest;
+
 typedef struct _axonkey_service_v1_SetAudioGainRequest {
     int32_t gain_db;
 } axonkey_service_v1_SetAudioGainRequest;
@@ -80,8 +84,8 @@ typedef struct _axonkey_service_v1_Device {
     bool input_blocked;
     bool data_forward_enabled;
     bool connected;
-    /* Optional device metadata. Omitted/empty means the service could not
-     * read the value during this request. */
+    /* Optional device metadata. Omitted/empty means the service could not read
+ the value during this request. */
     bool has_battery_level;
     uint32_t battery_level;
     pb_callback_t description_name;
@@ -139,6 +143,7 @@ extern "C" {
 #define axonkey_service_v1_ServiceInfo_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0}
 #define axonkey_service_v1_ServiceStatus_init_default {0}
 #define axonkey_service_v1_SetServiceStatusRequest_init_default {0}
+#define axonkey_service_v1_SetServiceEnableRequest_init_default {0}
 #define axonkey_service_v1_SetAudioGainRequest_init_default {0}
 #define axonkey_service_v1_OperationResult_init_default {0, {{NULL}, NULL}}
 #define axonkey_service_v1_DeviceList_init_default {{{NULL}, NULL}}
@@ -158,6 +163,7 @@ extern "C" {
 #define axonkey_service_v1_ServiceInfo_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0}
 #define axonkey_service_v1_ServiceStatus_init_zero {0}
 #define axonkey_service_v1_SetServiceStatusRequest_init_zero {0}
+#define axonkey_service_v1_SetServiceEnableRequest_init_zero {0}
 #define axonkey_service_v1_SetAudioGainRequest_init_zero {0}
 #define axonkey_service_v1_OperationResult_init_zero {0, {{NULL}, NULL}}
 #define axonkey_service_v1_DeviceList_init_zero  {{{NULL}, NULL}}
@@ -183,6 +189,7 @@ extern "C" {
 #define axonkey_service_v1_ServiceInfo_audio_gain_db_tag 5
 #define axonkey_service_v1_ServiceStatus_enabled_tag 1
 #define axonkey_service_v1_SetServiceStatusRequest_enabled_tag 1
+#define axonkey_service_v1_SetServiceEnableRequest_enabled_tag 1
 #define axonkey_service_v1_SetAudioGainRequest_gain_db_tag 1
 #define axonkey_service_v1_OperationResult_success_tag 1
 #define axonkey_service_v1_OperationResult_error_tag 2
@@ -274,6 +281,11 @@ X(a, STATIC,   SINGULAR, BOOL,     enabled,           1)
 #define axonkey_service_v1_SetServiceStatusRequest_CALLBACK NULL
 #define axonkey_service_v1_SetServiceStatusRequest_DEFAULT NULL
 
+#define axonkey_service_v1_SetServiceEnableRequest_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     enabled,           1)
+#define axonkey_service_v1_SetServiceEnableRequest_CALLBACK NULL
+#define axonkey_service_v1_SetServiceEnableRequest_DEFAULT NULL
+
 #define axonkey_service_v1_SetAudioGainRequest_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, INT32,    gain_db,           1)
 #define axonkey_service_v1_SetAudioGainRequest_CALLBACK NULL
@@ -351,6 +363,7 @@ extern const pb_msgdesc_t axonkey_service_v1_AudioLevelRequest_msg;
 extern const pb_msgdesc_t axonkey_service_v1_ServiceInfo_msg;
 extern const pb_msgdesc_t axonkey_service_v1_ServiceStatus_msg;
 extern const pb_msgdesc_t axonkey_service_v1_SetServiceStatusRequest_msg;
+extern const pb_msgdesc_t axonkey_service_v1_SetServiceEnableRequest_msg;
 extern const pb_msgdesc_t axonkey_service_v1_SetAudioGainRequest_msg;
 extern const pb_msgdesc_t axonkey_service_v1_OperationResult_msg;
 extern const pb_msgdesc_t axonkey_service_v1_DeviceList_msg;
@@ -372,6 +385,7 @@ extern const pb_msgdesc_t axonkey_service_v1_Event_msg;
 #define axonkey_service_v1_ServiceInfo_fields &axonkey_service_v1_ServiceInfo_msg
 #define axonkey_service_v1_ServiceStatus_fields &axonkey_service_v1_ServiceStatus_msg
 #define axonkey_service_v1_SetServiceStatusRequest_fields &axonkey_service_v1_SetServiceStatusRequest_msg
+#define axonkey_service_v1_SetServiceEnableRequest_fields &axonkey_service_v1_SetServiceEnableRequest_msg
 #define axonkey_service_v1_SetAudioGainRequest_fields &axonkey_service_v1_SetAudioGainRequest_msg
 #define axonkey_service_v1_OperationResult_fields &axonkey_service_v1_OperationResult_msg
 #define axonkey_service_v1_DeviceList_fields &axonkey_service_v1_DeviceList_msg
@@ -400,6 +414,7 @@ extern const pb_msgdesc_t axonkey_service_v1_Event_msg;
 #define axonkey_service_v1_ServiceStatusRequest_size 0
 #define axonkey_service_v1_ServiceStatus_size    2
 #define axonkey_service_v1_SetAudioGainRequest_size 11
+#define axonkey_service_v1_SetServiceEnableRequest_size 2
 #define axonkey_service_v1_SetServiceStatusRequest_size 2
 #define axonkey_service_v1_SubscribeRequest_size 6
 #define axonkey_service_v1_VoiceStatusRequest_size 0

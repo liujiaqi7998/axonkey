@@ -91,7 +91,7 @@ PCM，再写入虚拟麦克风。虚拟麦克风已被其他语音线程占用�
 [nanopb](https://github.com/nanopb/nanopb) 0.4.9（CMake `FetchContent` 钉版本）
 完成，C++ 封装位于 `protobuf/axonkey_rpc.*`，生成代码在 `protobuf/generated/`。
 桌面端可通过 `GetServiceInfo`（其中包含当前 `audio_gain_db`）、
-`GetServiceStatus`、`SetServiceStatus`、`SetAudioGain`、`GetDevices`、`GetVoiceStatus`、`GetAudioLevel` 查询或控制服务，
+`GetServiceStatus`、`SetServiceStatus`、`SetServiceEnable`、`SetAudioGain`、`GetDevices`、`GetVoiceStatus`、`GetAudioLevel` 查询或控制服务，
 并通过 `Subscribe` 订阅 `keyboard`、`audio_level`、`voice_status` 事件。键盘报告来自
 已挂载并拦截输入的 Quarbor 端点，音频电平来自增益处理后的 PCM 样本。
 `GetDevices` 的每个 `Device` 还会尽力返回服务可读取的电量 `battery_level` 和描述名称
@@ -141,12 +141,15 @@ cd windows\service\script
 
 Windows 首次使用设置的“驱动安装”页包含后台服务状态，以及安装、卸载、启动、停止操作。
 状态通过 Windows 服务管理器只读查询，页面每 3 秒和窗口重新获得焦点时刷新。
-四项修改操作都通过 `ShellExecuteExW` 的 `runas` 请求管理员权限，等待操作完成后再读取实际状态。
+安装、启动、停止和卸载通过 `ShellExecuteExW` 的 `runas` 请求管理员权限，等待操作完成后再读取实际状态。
+“开机自启”通过 `SetServiceEnable` RPC 由已运行的 LocalSystem 服务调用 SCM 设置：启用为
+`Automatic`，关闭为 `Manual`，不再由桌面进程直接执行 PowerShell。
 
 应用使用 `scripts/manage-windows-service.ps1` 管理固定的 `AxonkeyService`。
-安装会直接将运行环境中的 `windows\service\AxonkeyService.exe` 注册为 Windows 服务，
-不会复制服务程序；服务以 LocalSystem 注册并设置开机自动启动，安装后可单独点击“启动”。
-卸载先停止服务并删除服务注册，不会删除运行环境中的服务程序；日志和注册表配置保留。
+安装会将运行环境中的 `windows\service\AxonkeyService.exe` 复制到
+`%ProgramData%\Axonkey\service\AxonkeyService.exe`，再将复制后的文件注册为 Windows 服务；
+服务以 LocalSystem 注册并设置开机自动启动，安装后可单独点击“启动”。
+卸载会先等待服务停止完成，再删除服务注册和 `%ProgramData%\Axonkey\service` 目录；日志和注册表配置保留。
 操作错误记录在 `%ProgramData%\Axonkey\Logs\ServiceManagement.log`。
 
 `npm run build:windows-service` 使用 Visual Studio C++ 工具链和 CMake/Ninja 构建服务，
@@ -183,7 +186,7 @@ UTF-8 日志 `AxonkeyService.log` 写在 **AxonkeyService.exe 所在目录**，�
 ```powershell
 Start-Service AxonkeyService
 Get-Service AxonkeyService
-Get-Content ".\windows\service\AxonkeyService.log" -Encoding UTF8 -Tail 50 -Wait
+Get-Content "$env:ProgramData\Axonkey\service\AxonkeyService.log" -Encoding UTF8 -Tail 50 -Wait
 ```
 
 蓝牙 API 返回空服务时，语音线程会记录错误并由设备重扫重试，不再直接访问空对象。

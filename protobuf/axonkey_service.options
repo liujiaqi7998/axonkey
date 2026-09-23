@@ -14,6 +14,7 @@ axonkey.service.v1.ServiceInfo.protocol_version    type:FT_CALLBACK
 axonkey.service.v1.ServiceInfo.pipe_name           type:FT_CALLBACK
 
 axonkey.service.v1.SetServiceStatusRequest.enabled type:FT_DEFAULT
+axonkey.service.v1.SetServiceEnableRequest.enabled type:FT_DEFAULT
 
 axonkey.service.v1.OperationResult.error           type:FT_CALLBACK
 
