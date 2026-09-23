@@ -375,16 +375,12 @@ struct DriverInstallerReport {
 enum WindowsServiceAction {
     Install,
     Uninstall,
-    Start,
-    Stop,
 }
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowsServiceStatus {
     state: String,
-    process_id: u32,
-    exit_code: u32,
     #[cfg(target_os = "windows")]
     rpc: Option<service_rpc::ServiceRpcStatus>,
 }
@@ -417,64 +413,19 @@ fn powershell_path() -> std::path::PathBuf {
 }
 
 #[cfg(target_os = "windows")]
-fn query_windows_service() -> Result<WindowsServiceStatus, String> {
-    use std::os::windows::process::CommandExt;
-
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let script = r#"$service = Get-CimInstance -ClassName Win32_Service -Filter "Name='AxonkeyService'" -ErrorAction Stop; $result = if ($null -eq $service) { [pscustomobject]@{ state = 'notInstalled'; processId = 0; exitCode = 0 } } else { [pscustomobject]@{ state = [string]$service.State; processId = [int]$service.ProcessId; exitCode = [uint32]$service.ExitCode } }; $result | ConvertTo-Json -Compress"#;
-    let output = std::process::Command::new(powershell_path())
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ])
-        .output()
-        .map_err(|error| format!("无法查询 AxonkeyService：{error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "无法查询 AxonkeyService：{}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+fn windows_service_status(rpc: &service_rpc::ServiceConnection) -> WindowsServiceStatus {
+    let rpc_status = rpc.status();
+    WindowsServiceStatus {
+        state: if rpc_status.connected { "running" } else { "stopped" }.into(),
+        rpc: Some(rpc_status),
     }
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("无法解析 AxonkeyService 状态：{error}"))?;
-    let raw_state = value
-        .get("state")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("Unknown");
-    let state = match raw_state {
-        "Running" => "running",
-        "Stopped" => "stopped",
-        "Start Pending" => "startPending",
-        "Stop Pending" => "stopPending",
-        "Paused" => "paused",
-        "Delete Pending" => "deletePending",
-        "notInstalled" => "notInstalled",
-        _ => "unknown",
-    };
-    Ok(WindowsServiceStatus {
-        state: state.into(),
-        process_id: value
-            .get("processId")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0) as u32,
-        exit_code: value
-            .get("exitCode")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0) as u32,
-        rpc: None,
-    })
 }
 
 #[cfg(target_os = "windows")]
 fn run_windows_service_action(
     resource_dir: &std::path::Path,
     action: WindowsServiceAction,
-) -> Result<WindowsServiceStatus, String> {
+) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -486,8 +437,6 @@ fn run_windows_service_action(
     let action_name = match action {
         WindowsServiceAction::Install => "Install",
         WindowsServiceAction::Uninstall => "Uninstall",
-        WindowsServiceAction::Start => "Start",
-        WindowsServiceAction::Stop => "Stop",
     };
     let mut command = std::process::Command::new(powershell_path());
     command
@@ -523,7 +472,7 @@ fn run_windows_service_action(
             detail
         });
     }
-    query_windows_service()
+    Ok(())
 }
 
 #[tauri::command]
@@ -532,11 +481,7 @@ async fn get_windows_service_status(
 ) -> Result<WindowsServiceStatus, String> {
     #[cfg(target_os = "windows")]
     {
-        let mut status = tauri::async_runtime::spawn_blocking(query_windows_service)
-            .await
-            .map_err(|error| format!("服务查询失败：{error}"))??;
-        status.rpc = Some(rpc.status());
-        return Ok(status);
+        return Ok(windows_service_status(&rpc));
     }
     #[cfg(not(target_os = "windows"))]
     Err("服务管理仅支持 Windows。".into())
@@ -611,13 +556,12 @@ async fn manage_windows_service(
             .path()
             .resource_dir()
             .map_err(|error| format!("Cannot resolve bundled resources: {error}"))?;
-        let mut status = tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::spawn_blocking(move || {
             run_windows_service_action(&resource_dir, action)
         })
         .await
         .map_err(|error| format!("服务操作失败：{error}"))??;
-        status.rpc = Some(rpc.status());
-        return Ok(status);
+        return Ok(windows_service_status(&rpc));
     }
     #[cfg(not(target_os = "windows"))]
     {

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Install', 'Uninstall', 'Start', 'Stop')]
+    [ValidateSet('Install', 'Uninstall')]
     [string]$Action,
     [string]$ServiceExecutable
 )
@@ -40,6 +40,18 @@ function Stop-AxonkeyService {
     } finally { $service.Dispose() }
 }
 
+function Start-AxonkeyService {
+    $service = Get-AxonkeyService
+    if (-not $service) { throw 'Install AxonkeyService before starting it.' }
+    try {
+        $service.Refresh()
+        if ($service.Status -ne 'Running') {
+            if ($service.Status -ne 'StartPending') { $service.Start() }
+            $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+        }
+    } finally { $service.Dispose() }
+}
+
 function Write-ServiceLog([string]$message) {
     New-Item -ItemType Directory -Path (Split-Path -Parent $logPath) -Force | Out-Null
     Add-Content -LiteralPath $logPath -Value "$(Get-Date -Format o) $message" -Encoding UTF8
@@ -51,40 +63,26 @@ try {
 
     switch ($Action) {
         'Install' {
+            $record = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+            if ($record) {
+                Set-Service -Name $serviceName -StartupType Automatic
+                Start-AxonkeyService
+                break
+            }
             if (-not $ServiceExecutable -or -not (Test-Path -LiteralPath $ServiceExecutable -PathType Leaf)) {
                 throw 'The bundled AxonkeyService.exe was not found.'
             }
             $serviceDirectory = Join-Path $env:ProgramData 'Axonkey\service'
             $destination = Join-Path $serviceDirectory 'AxonkeyService.exe'
-            Stop-AxonkeyService
             New-Item -ItemType Directory -Path $serviceDirectory -Force | Out-Null
             Copy-Item -LiteralPath $ServiceExecutable -Destination $destination -Force
             $binaryPath = '"{0}"' -f ([System.IO.Path]::GetFullPath($destination))
-            $record = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
-            if ($record) {
-                $result = Invoke-CimMethod -InputObject $record -MethodName Change -Arguments @{
-                    PathName = $binaryPath; StartMode = 'Automatic'; StartName = 'LocalSystem'
-                }
-                if ($result.ReturnValue -ne 0) { throw "Service configuration failed: Win32=$($result.ReturnValue)" }
-            } else {
-                New-Service -Name $serviceName -DisplayName 'Axonkey Service' `
-                    -Description 'RC003 HID and voice service for Axonkey.' `
-                    -BinaryPathName $binaryPath -StartupType Automatic | Out-Null
-            }
+            New-Service -Name $serviceName -DisplayName 'Axonkey Service' `
+                -Description 'RC003 HID and voice service for Axonkey.' `
+                -BinaryPathName $binaryPath -StartupType Automatic | Out-Null
             Set-Service -Name $serviceName -StartupType Automatic
+            Start-AxonkeyService
         }
-        'Start' {
-            $service = Get-AxonkeyService
-            if (-not $service) { throw 'Install AxonkeyService before starting it.' }
-            try {
-                $service.Refresh()
-                if ($service.Status -ne 'Running') {
-                    if ($service.Status -ne 'StartPending') { $service.Start() }
-                    $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-                }
-            } finally { $service.Dispose() }
-        }
-        'Stop' { Stop-AxonkeyService }
         'Uninstall' {
             Stop-AxonkeyService
             $record = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop

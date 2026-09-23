@@ -10,8 +10,6 @@ export type WindowsServiceState =
 
 export type WindowsServiceStatus = {
   state: WindowsServiceState
-  processId: number
-  exitCode: number
   rpc: {
     connected: boolean
     info: {
@@ -24,7 +22,7 @@ export type WindowsServiceStatus = {
   }
 }
 
-export type WindowsServiceAction = 'install' | 'uninstall' | 'start' | 'stop'
+export type WindowsServiceAction = 'install' | 'uninstall'
 
 export type WindowsDeviceInfo = {
   instanceId: string
@@ -67,11 +65,4 @@ export const serviceStateLabels: Record<WindowsServiceState, string> = {
   paused: '已暂停',
   deletePending: '等待卸载完成',
   unknown: '状态未知',
-}
-
-export function canManageService(state: WindowsServiceState | undefined, action: WindowsServiceAction) {
-  if (action === 'install') return state === 'notInstalled'
-  if (action === 'start') return state === 'stopped'
-  if (action === 'stop') return state === 'running' || state === 'paused'
-  return state === 'stopped' || state === 'running' || state === 'paused'
 }
