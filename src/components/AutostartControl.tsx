@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import { SettingsHelp } from './SettingsHelp'
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
 
-export function AutostartControl({ supported }: { supported: boolean }) {
+type AutostartControlProps = {
+  supported: boolean
+  windows: boolean
+}
+
+export function AutostartControl({ supported, windows }: AutostartControlProps) {
   const [enabled, setEnabled] = useState<boolean | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -40,8 +46,23 @@ export function AutostartControl({ supported }: { supported: boolean }) {
     try {
       // Read again before changing: the OS setting may have changed externally.
       const current = await isEnabled()
-      if (current) await disable()
-      else await enable()
+      const next = !current
+      try {
+        if (next) await enable()
+        else await disable()
+        if (windows) await invoke('set_windows_service_autostart', { enabled: next })
+      } catch (cause) {
+        // Keep the app and service settings aligned when UAC is cancelled or
+        // changing the service startup type otherwise fails.
+        if (windows) {
+          const changed = await isEnabled().catch(() => next)
+          if (changed !== current) {
+            if (current) await enable()
+            else await disable()
+          }
+        }
+        throw cause
+      }
       const actual = await isEnabled()
       setEnabled(actual)
       if (actual === current) setError('开机自启设置未生效，请重试。')
@@ -59,7 +80,7 @@ export function AutostartControl({ supported }: { supported: boolean }) {
       <span className="settings-form-label">启动：</span>
       <div className="settings-form-control">
         <label className="settings-checkbox"><input type="checkbox" checked={enabled === true} disabled={!supported || busy || enabled === null} onChange={() => void toggle()} />开机自启</label>
-        <SettingsHelp id="autostart-description" label="开机自启">{supported ? '登录电脑后在后台启动 Axonkey，不会自动打开窗口。' : '请在 Windows 或 macOS 桌面应用中设置。'}</SettingsHelp>
+        <SettingsHelp id="autostart-description" label="开机自启">{supported ? windows ? '登录电脑后在后台启动 Axonkey，并将 AxonkeyService 设为自动启动；关闭后服务改为手动启动。更改服务设置时 Windows 会请求管理员授权。' : '登录电脑后在后台启动 Axonkey，不会自动打开窗口。' : '请在 Windows 或 macOS 桌面应用中设置。'}</SettingsHelp>
         <span className="settings-autostart-status" role="status">{busy ? '正在同步…' : ''}</span>
       </div>
     </div>

@@ -75,7 +75,7 @@ export function SettingsPage({ section, onSectionChange, platform, nativeRuntime
       <div className="settings-panels">
     <section id="settings-panel-startup" aria-labelledby="settings-nav-startup" hidden={currentSection !== 'startup'}>
       <h3 className="settings-section-title">启动设置</h3>
-      <AutostartControl supported={nativeRuntime && (platform === 'macos' || platform === 'windows')} />
+      <AutostartControl supported={nativeRuntime && (platform === 'macos' || platform === 'windows')} windows={platform === 'windows'} />
     </section>
     <section id="settings-panel-permissions" aria-labelledby="settings-nav-permissions" hidden={currentSection !== 'permissions'}>
     <div className="settings-permissions-heading">

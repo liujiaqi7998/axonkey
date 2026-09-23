@@ -43,7 +43,7 @@ export function AppHeader({ activePage, hasUpdate, enabled, enabledPending, serv
       <button type="button" className={`${activePage === 'about' ? 'active' : ''} ${hasUpdate ? 'has-update' : ''}`} title={hasUpdate ? '发现新版本' : undefined} aria-current={activePage === 'about' ? 'page' : undefined} onClick={() => onNavigate('about')}><Info size={15} /> 关于{hasUpdate && <span className="update-dot" role="img" aria-label="有新版本可用" />}</button>
     </nav>
     <div className="header-actions">
-      <label className="enable-control"><span>软件功能总开关</span><button className={`switch ${enabled ? 'on' : ''}`} type="button" aria-label="软件功能总开关" aria-pressed={enabled} aria-busy={enabledPending} disabled={enabledPending || !serviceCommunicationReady} onClick={onToggleEnabled}><span /></button></label>
+      <label className="enable-control"><span>软件功能总开关</span><button className={`switch ${enabled ? 'on' : ''}`} type="button" aria-label="软件功能总开关" title={!serviceCommunicationReady ? '等待 AxonkeyService 通讯成功' : undefined} aria-pressed={enabled} aria-busy={enabledPending} disabled={enabledPending || !serviceCommunicationReady} onClick={onToggleEnabled}><span /></button></label>
     </div>
   </header>
 }

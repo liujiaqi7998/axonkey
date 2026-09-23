@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Install', 'Uninstall', 'Start', 'Stop')]
+    [ValidateSet('Install', 'Uninstall', 'Start', 'Stop', 'EnableAutostart', 'DisableAutostart')]
     [string]$Action,
     [string]$ServiceExecutable
 )
@@ -38,6 +38,13 @@ function Stop-AxonkeyService {
             $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
         }
     } finally { $service.Dispose() }
+}
+
+function Set-AxonkeyServiceStartup([ValidateSet('Automatic', 'Manual')][string]$StartupType) {
+    $service = Get-AxonkeyService
+    if (-not $service) { throw 'Install AxonkeyService before changing its startup type.' }
+    $service.Dispose()
+    Set-Service -Name $serviceName -StartupType $StartupType
 }
 
 function Write-ServiceLog([string]$message) {
@@ -80,6 +87,8 @@ try {
             } finally { $service.Dispose() }
         }
         'Stop' { Stop-AxonkeyService }
+        'EnableAutostart' { Set-AxonkeyServiceStartup 'Automatic' }
+        'DisableAutostart' { Set-AxonkeyServiceStartup 'Manual' }
         'Uninstall' {
             Stop-AxonkeyService
             $record = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop

@@ -10,14 +10,14 @@
     "resources": {
       "../windows/service/dist/AxonkeyService.exe": "windows/service/AxonkeyService.exe",
       "../scripts/manage-windows-service.ps1": "scripts/manage-windows-service.ps1",
-      "../windows/driver/QuarborAxonkeyDriverInstaller.exe": "driver/QuarborAxonkeyDriverInstaller.exe",
-      "../windows/driver/QuarborHIDFilterDriver.cat": "driver/QuarborHIDFilterDriver.cat",
-      "../windows/driver/QuarborHIDFilterDriver.inf": "driver/QuarborHIDFilterDriver.inf",
-      "../windows/driver/QuarborHIDFilterDriver.sys": "driver/QuarborHIDFilterDriver.sys",
-      "../windows/driver/QuarborVirtualMicrophoneDriver.cat": "driver/QuarborVirtualMicrophoneDriver.cat",
-      "../windows/driver/QuarborVirtualMicrophoneDriver.inf": "driver/QuarborVirtualMicrophoneDriver.inf",
-      "../windows/driver/QuarborVirtualMicrophoneDriver.sys": "driver/QuarborVirtualMicrophoneDriver.sys",
-      "../windows/driver/License": "driver/License",
+      "../windows/driver/QuarborAxonkeyDriverInstaller.exe": "windows/driver/QuarborAxonkeyDriverInstaller.exe",
+      "../windows/driver/QuarborHIDFilterDriver.cat": "windows/driver/QuarborHIDFilterDriver.cat",
+      "../windows/driver/QuarborHIDFilterDriver.inf": "windows/driver/QuarborHIDFilterDriver.inf",
+      "../windows/driver/QuarborHIDFilterDriver.sys": "windows/driver/QuarborHIDFilterDriver.sys",
+      "../windows/driver/QuarborVirtualMicrophoneDriver.cat": "windows/driver/QuarborVirtualMicrophoneDriver.cat",
+      "../windows/driver/QuarborVirtualMicrophoneDriver.inf": "windows/driver/QuarborVirtualMicrophoneDriver.inf",
+      "../windows/driver/QuarborVirtualMicrophoneDriver.sys": "windows/driver/QuarborVirtualMicrophoneDriver.sys",
+      "../windows/driver/License": "windows/driver/License",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     },
     "windows": {

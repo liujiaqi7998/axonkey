@@ -253,7 +253,7 @@ export function HomeDashboard({
             tone={audioPresentation.tone}
             detail={audioDetail}
             action={<button type="button" className="home-row-action" onClick={onOpenPermissions}>音频设置<ChevronRight size={13} /></button>}
-            leadingAction={<button type="button" className="home-audio-test-button" onClick={onTestAudio} disabled={!serviceCommunicationReady}><SlidersHorizontal size={20} aria-hidden="true" /><span>校准音量</span></button>}
+            leadingAction={<button type="button" className="home-audio-test-button" onClick={onTestAudio} title={!serviceCommunicationReady ? '等待 AxonkeyService 通讯成功' : undefined} disabled={!serviceCommunicationReady}><SlidersHorizontal size={20} aria-hidden="true" /><span>校准音量</span></button>}
           />
           <HomeStatusRow
             icon={macOS ? <Bluetooth size={18} /> : <Radio size={18} />}

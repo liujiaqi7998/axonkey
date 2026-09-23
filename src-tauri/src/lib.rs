@@ -377,6 +377,8 @@ enum WindowsServiceAction {
     Uninstall,
     Start,
     Stop,
+    EnableAutostart,
+    DisableAutostart,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -488,6 +490,8 @@ fn run_windows_service_action(
         WindowsServiceAction::Uninstall => "Uninstall",
         WindowsServiceAction::Start => "Start",
         WindowsServiceAction::Stop => "Stop",
+        WindowsServiceAction::EnableAutostart => "EnableAutostart",
+        WindowsServiceAction::DisableAutostart => "DisableAutostart",
     };
     let mut command = std::process::Command::new(powershell_path());
     command
@@ -626,6 +630,35 @@ async fn manage_windows_service(
     }
 }
 
+#[tauri::command]
+async fn set_windows_service_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::Manager;
+
+        let resource_dir = app
+            .path()
+            .resource_dir()
+            .map_err(|error| format!("Cannot resolve bundled resources: {error}"))?;
+        let action = if enabled {
+            WindowsServiceAction::EnableAutostart
+        } else {
+            WindowsServiceAction::DisableAutostart
+        };
+        tauri::async_runtime::spawn_blocking(move || {
+            run_windows_service_action(&resource_dir, action).map(|_| ())
+        })
+        .await
+        .map_err(|error| format!("服务启动设置更新失败：{error}"))??;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, enabled);
+        Err("服务启动设置仅支持 Windows。".into())
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn driver_log_path(_driver: &str, action: &str) -> Result<std::path::PathBuf, String> {
     let local_app_data = std::env::var_os("LOCALAPPDATA")
@@ -657,8 +690,8 @@ fn find_driver_installer(resource_dir: &std::path::Path) -> Result<std::path::Pa
 
     for root in roots {
         for candidate in [
-            root.join("driver").join("QuarborAxonkeyDriverInstaller.exe"),
             root.join("windows").join("driver").join("QuarborAxonkeyDriverInstaller.exe"),
+            root.join("driver").join("QuarborAxonkeyDriverInstaller.exe"),
             root.join("QuarborAxonkeyDriverInstaller.exe"),
         ] {
             if candidate.is_file() {
@@ -1532,6 +1565,7 @@ pub fn run() {
             get_windows_service_rpc_status,
             set_windows_service_status,
             manage_windows_service,
+            set_windows_service_autostart,
             open_windows_settings,
             open_system_settings,
             set_permission_helper_mode,
