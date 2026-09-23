@@ -477,7 +477,12 @@ function AppController() {
   }
 
   const toggleEnabled = async () => {
-    if (enabledPending || enabledRequestRunningRef.current || (platform === 'windows' && nativeRuntime && !windowsServiceCommunicationReady)) return
+    if (enabledPending || enabledRequestRunningRef.current) return
+    if (platform === 'windows' && nativeRuntime && !windowsServiceCommunicationReady) {
+      setToast('AxonkeyService 服务尚未安装，功能暂不可用')
+      window.setTimeout(() => setToast(''), 2600)
+      return
+    }
     if (!enabled && platform === 'macos' && (!macPermissions.inputMonitoring || !macPermissions.accessibility)) {
       updateSetup((current) => setCurrentSetupStep(current, 'inputDriver'))
       setSetupOpen(true)
@@ -1504,7 +1509,7 @@ function AppController() {
             <strong id="mapping-disabled-title">自定义按键功能未开启</strong>
             <p>可以继续编辑和保存配置，开启后自定义按键才会生效。也可通过右上角的全局开关开启。</p>
           </div>
-          <button type="button" className="mapping-enable-button" disabled={enabledPending || (platform === 'windows' && nativeRuntime && !windowsServiceCommunicationReady)} onClick={toggleEnabled}>立即开启</button>
+          <button type="button" className="mapping-enable-button" disabled={enabledPending} onClick={toggleEnabled}>立即开启</button>
         </section>}
 
         {activePage === 'overview' ? <MappingOverview
@@ -1644,7 +1649,11 @@ function AppController() {
           onOpenPermissions={() => { setSettingsSection('permissions'); setActivePage('settings') }}
           onRefresh={() => void refreshHome()}
           onTestAudio={() => {
-            if (platform === 'windows' && nativeRuntime && !windowsServiceCommunicationReady) return
+            if (platform === 'windows' && nativeRuntime && !windowsServiceCommunicationReady) {
+              setToast('AxonkeyService 服务尚未安装，音量校准暂不可用')
+              window.setTimeout(() => setToast(''), 2600)
+              return
+            }
             setAudioTestOpen(true)
           }}
           onOpenStep={openSetupStep}
