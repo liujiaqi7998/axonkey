@@ -160,6 +160,7 @@ function AppController() {
   const [textInputDraft, setTextInputDraft] = useState<string | null>(null)
   const [batteryLevel, setBatteryLevel] = useState<number | null>(null)
   const [windowsDevices, setWindowsDevices] = useState<WindowsDevicesProbe | null>(null)
+  const [windowsServiceCommunicationReady, setWindowsServiceCommunicationReady] = useState(() => !nativeRuntime || platform !== 'windows')
   const [previewBatteryLevel, setPreviewBatteryLevel] = useState<number | null>(null)
   const serviceBatteryLevel = platform === 'windows' ? windowsDevices?.device?.batteryLevel ?? null : batteryLevel
   const displayedBatteryLevel = debugMode ? previewBatteryLevel ?? serviceBatteryLevel : serviceBatteryLevel
@@ -229,18 +230,26 @@ function AppController() {
   }, [])
 
   useEffect(() => {
-    if (!nativeRuntime || platform !== 'windows') return
+    if (!nativeRuntime || platform !== 'windows') {
+      setWindowsServiceCommunicationReady(true)
+      return
+    }
     let active = true
     enabledRequestRunningRef.current = true
     setEnabledPending(true)
+    setWindowsServiceCommunicationReady(false)
     void invoke<boolean>('get_windows_service_rpc_status')
       .then((serviceEnabled) => {
-        if (active) setEnabled(serviceEnabled)
+        if (active) {
+          setEnabled(serviceEnabled)
+          setWindowsServiceCommunicationReady(true)
+        }
       })
       .catch((error) => {
         logError('Failed to read AxonkeyService feature status', error)
         if (active) {
           setEnabled(false)
+          setWindowsServiceCommunicationReady(false)
           setToast(`无法读取 AxonkeyService 功能状态：${String(error)}`)
           window.setTimeout(() => setToast(''), 2600)
         }
@@ -468,7 +477,7 @@ function AppController() {
   }
 
   const toggleEnabled = async () => {
-    if (enabledPending || enabledRequestRunningRef.current) return
+    if (enabledPending || enabledRequestRunningRef.current || (platform === 'windows' && nativeRuntime && !windowsServiceCommunicationReady)) return
     if (!enabled && platform === 'macos' && (!macPermissions.inputMonitoring || !macPermissions.accessibility)) {
       updateSetup((current) => setCurrentSetupStep(current, 'inputDriver'))
       setSetupOpen(true)
@@ -1205,6 +1214,7 @@ function AppController() {
       if (platform === 'windows') {
         const result = await invoke<WindowsDevicesProbe>('get_windows_devices')
         setWindowsDevices(result)
+        setWindowsServiceCommunicationReady(result.serviceAvailable)
         updateSetup((current) => {
           if (!result.serviceAvailable) {
             return setDeviceConnection(current, { status: 'error', message: '无法访问到服务' })
@@ -1482,6 +1492,7 @@ function AppController() {
           hasUpdate={releaseUpdate.hasUpdate}
           enabled={enabled}
           enabledPending={enabledPending}
+          serviceCommunicationReady={windowsServiceCommunicationReady}
           onBrandClick={handleBrandClick}
           onNavigate={setActivePage}
           onToggleEnabled={toggleEnabled}
@@ -1493,7 +1504,7 @@ function AppController() {
             <strong id="mapping-disabled-title">自定义按键功能未开启</strong>
             <p>可以继续编辑和保存配置，开启后自定义按键才会生效。也可通过右上角的全局开关开启。</p>
           </div>
-          <button type="button" className="mapping-enable-button" disabled={enabledPending} onClick={toggleEnabled}>立即开启</button>
+          <button type="button" className="mapping-enable-button" disabled={enabledPending || (platform === 'windows' && nativeRuntime && !windowsServiceCommunicationReady)} onClick={toggleEnabled}>立即开启</button>
         </section>}
 
         {activePage === 'overview' ? <MappingOverview
@@ -1628,10 +1639,14 @@ function AppController() {
           batteryLevel={displayedBatteryLevel}
           onAdjustBattery={debugMode ? adjustPreviewBattery : undefined}
           enabled={enabled}
+          serviceCommunicationReady={windowsServiceCommunicationReady}
           onOpenSettings={() => setActivePage('settings')}
           onOpenPermissions={() => { setSettingsSection('permissions'); setActivePage('settings') }}
           onRefresh={() => void refreshHome()}
-          onTestAudio={() => setAudioTestOpen(true)}
+          onTestAudio={() => {
+            if (platform === 'windows' && nativeRuntime && !windowsServiceCommunicationReady) return
+            setAudioTestOpen(true)
+          }}
           onOpenStep={openSetupStep}
           onOpenMapping={() => setActivePage('mapping')}
           onOpenLogs={() => void openLogDirectory()}

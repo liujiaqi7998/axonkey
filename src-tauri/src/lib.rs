@@ -504,7 +504,7 @@ fn run_windows_service_action(
     if matches!(action, WindowsServiceAction::Install) {
         let executable = windows_service_resource(
             resource_dir,
-            "service/AxonkeyService.exe",
+            "windows/service/AxonkeyService.exe",
             "windows/service/dist/AxonkeyService.exe",
         )?;
         command.args(["-ServiceExecutable"]).arg(executable);

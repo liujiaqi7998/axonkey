@@ -8,7 +8,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../windows/service/dist/AxonkeyService.exe": "service/AxonkeyService.exe",
+      "../windows/service/dist/AxonkeyService.exe": "windows/service/AxonkeyService.exe",
       "../scripts/manage-windows-service.ps1": "scripts/manage-windows-service.ps1",
       "../windows/driver/QuarborAxonkeyDriverInstaller.exe": "driver/QuarborAxonkeyDriverInstaller.exe",
       "../windows/driver/QuarborHIDFilterDriver.cat": "driver/QuarborHIDFilterDriver.cat",

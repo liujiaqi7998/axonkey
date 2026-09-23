@@ -54,16 +54,8 @@ try {
             if (-not $ServiceExecutable -or -not (Test-Path -LiteralPath $ServiceExecutable -PathType Leaf)) {
                 throw 'The bundled AxonkeyService.exe was not found.'
             }
-            $programFilesRoot = $env:ProgramW6432
-            if (-not $programFilesRoot) { $programFilesRoot = $env:ProgramFiles }
-            $directory = Join-Path $programFilesRoot 'Axonkey\Service'
-            New-Item -ItemType Directory -Path $directory -Force | Out-Null
-            $destination = Join-Path $directory 'AxonkeyService.exe'
-            $staged = Join-Path $directory 'AxonkeyService.new.exe'
-            Copy-Item -LiteralPath $ServiceExecutable -Destination $staged -Force
             Stop-AxonkeyService
-            Move-Item -LiteralPath $staged -Destination $destination -Force
-            $binaryPath = '"{0}"' -f $destination
+            $binaryPath = '"{0}"' -f ([System.IO.Path]::GetFullPath($ServiceExecutable))
             $record = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
             if ($record) {
                 $result = Invoke-CimMethod -InputObject $record -MethodName Change -Arguments @{
@@ -94,12 +86,6 @@ try {
             if ($record) {
                 $result = Invoke-CimMethod -InputObject $record -MethodName Delete
                 if ($result.ReturnValue -ne 0) { throw "Service removal failed: Win32=$($result.ReturnValue)" }
-            }
-            $programFilesRoot = $env:ProgramW6432
-            if (-not $programFilesRoot) { $programFilesRoot = $env:ProgramFiles }
-            $directory = Join-Path $programFilesRoot 'Axonkey\Service'
-            if (Test-Path -LiteralPath $directory -PathType Container) {
-                Remove-Item -LiteralPath $directory -Recurse -Force
             }
         }
     }

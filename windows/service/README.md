@@ -144,9 +144,9 @@ Windows 首次使用设置的“驱动安装”页包含后台服务状态，以
 四项修改操作都通过 `ShellExecuteExW` 的 `runas` 请求管理员权限，等待操作完成后再读取实际状态。
 
 应用使用 `scripts/manage-windows-service.ps1` 管理固定的 `AxonkeyService`。
-安装会将随应用打包的服务复制到 `%ProgramFiles%\Axonkey\Service\AxonkeyService.exe`，
-以 LocalSystem 注册并设置开机自动启动；安装后可单独点击“启动”。
-卸载先停止服务、删除服务注册，再删除 `%ProgramFiles%\Axonkey\Service` 下的服务程序；日志和注册表配置保留。
+安装会直接将运行环境中的 `windows\service\AxonkeyService.exe` 注册为 Windows 服务，
+不会复制服务程序；服务以 LocalSystem 注册并设置开机自动启动，安装后可单独点击“启动”。
+卸载先停止服务并删除服务注册，不会删除运行环境中的服务程序；日志和注册表配置保留。
 操作错误记录在 `%ProgramData%\Axonkey\Logs\ServiceManagement.log`。
 
 `npm run build:windows-service` 使用 Visual Studio C++ 工具链和 CMake/Ninja 构建服务，
@@ -183,7 +183,7 @@ UTF-8 日志 `AxonkeyService.log` 写在 **AxonkeyService.exe 所在目录**，�
 ```powershell
 Start-Service AxonkeyService
 Get-Service AxonkeyService
-Get-Content "$env:ProgramFiles\Axonkey\Service\AxonkeyService.log" -Encoding UTF8 -Tail 50 -Wait
+Get-Content ".\windows\service\AxonkeyService.log" -Encoding UTF8 -Tail 50 -Wait
 ```
 
 蓝牙 API 返回空服务时，语音线程会记录错误并由设备重扫重试，不再直接访问空对象。

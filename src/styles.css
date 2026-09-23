@@ -144,6 +144,7 @@ h1 { color: #202327; font-size: 28px; letter-spacing: 0; line-height: 1; }
 .home-status-row.with-leading-action { grid-template-columns: 36px minmax(0, 1fr) 64px 128px; }
 .home-audio-test-button { display: inline-flex; width: 64px; height: 48px; flex-direction: column; align-self: center; flex-shrink: 0; align-items: center; justify-content: center; gap: 3px; padding: 4px; border: 1px solid #b8cee4; border-radius: 7px; color: #286cae; background: #edf5fc; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .home-audio-test-button:hover { border-color: #82add5; background: #e1effb; }
+.home-audio-test-button:disabled { cursor: default; border-color: #d5dce2; color: #89949d; background: #f1f3f5; opacity: .72; }
 .home-audio-test-button:focus-visible { outline: 2px solid #1478e8; outline-offset: 3px; }
 .home-status-row:first-child { border-top: 0; }
 .home-status-row:hover { background: rgba(255, 255, 255, .48); }
