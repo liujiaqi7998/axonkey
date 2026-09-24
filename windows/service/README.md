@@ -147,7 +147,7 @@ cd windows\service\script
 
 ## 桌面应用中的服务管理
 
-Windows 首次使用设置的“驱动安装”页包含后台服务状态，以及安装、卸载、启动、停止操作。
+Windows 首次使用设置的“驱动安装”页包含服务状态，以及安装、卸载、启动、停止操作。
 状态通过 Windows 服务管理器只读查询，页面每 3 秒和窗口重新获得焦点时刷新。
 安装、启动、停止和卸载通过 `ShellExecuteExW` 的 `runas` 请求管理员权限，等待操作完成后再读取实际状态。
 “开机自启”通过 `SetServiceEnable` RPC 由已运行的 LocalSystem 服务调用 SCM 设置：启用为

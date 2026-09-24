@@ -108,7 +108,7 @@ export function WindowsServiceControl({ nativeRuntime, disabled, onBusyChange, o
       <span className="driver-setup-icon"><Radio size={18} /></span>
       <div className="setup-service-heading-copy">
         <div className="setup-service-title">
-          <h3 id="setup-service-title">AxonkeyService 后台服务</h3>
+          <h3 id="setup-service-title">AxonkeyService 服务</h3>
         </div>
         <p>通过 RPC 连接确认服务是否运行</p>
       </div>
