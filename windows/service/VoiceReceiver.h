@@ -22,9 +22,11 @@ class VoiceReceiver final {
 public:
     struct State;
     using StatusCallback = std::function<void(const axonkey::rpc::VoiceStatus&)>;
+    using IssueCallback = std::function<void(const axonkey::rpc::ServiceIssue&)>;
 
     explicit VoiceReceiver(std::wstring deviceInstanceId, std::int32_t audioGainDb = kDefaultAudioGainDb,
-        VoiceAudioSession::LevelCallback level = {}, StatusCallback status = {});
+        VoiceAudioSession::LevelCallback level = {}, StatusCallback status = {},
+        IssueCallback issue = {});
     ~VoiceReceiver();
 
     VoiceReceiver(const VoiceReceiver&) = delete;
@@ -44,6 +46,7 @@ private:
     std::atomic<std::int32_t> audioGainDb_;
     VoiceAudioSession::LevelCallback level_;
     StatusCallback statusCallback_;
+    IssueCallback issueCallback_;
     std::shared_ptr<State> state_;
     std::mutex lifecycleMutex_;
     std::thread worker_;

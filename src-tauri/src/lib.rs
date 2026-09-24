@@ -570,6 +570,17 @@ async fn manage_windows_service(
     }
 }
 
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn get_windows_service_issue(app: tauri::AppHandle) -> Option<service_rpc::ServiceIssue> {
+    use tauri::Manager;
+    app.state::<service_rpc::ServiceConnection>().latest_issue()
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+fn get_windows_service_issue(_app: tauri::AppHandle) -> Option<String> { None }
+
 #[tauri::command]
 async fn set_windows_service_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -1450,7 +1461,7 @@ pub fn run() {
             app.manage(InputService::start());
             app.manage(MouseService::start());
             #[cfg(target_os = "windows")]
-            app.manage(service_rpc::ServiceConnection::start());
+            app.manage(service_rpc::ServiceConnection::start(app.handle().clone()));
             app.manage(PermissionHelperWindowState::default());
             app.state::<InputService>()
                 .set_event_app(app.handle().clone());
@@ -1491,6 +1502,7 @@ pub fn run() {
             launch_driver_action,
             probe_driver_installer,
             get_windows_service_status,
+            get_windows_service_issue,
             get_windows_service_rpc_status,
             set_windows_service_status,
             manage_windows_service,

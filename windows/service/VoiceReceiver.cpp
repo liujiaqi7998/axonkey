@@ -26,6 +26,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <new>
 
 namespace axonkey_service {
 namespace {
@@ -207,11 +208,15 @@ std::optional<std::uint8_t> ReadBatteryLevel(const BluetoothLEDevice& device) {
 
 void CloseGatt(GattConnection& connection) noexcept {
     if (connection.audioSubscribed) {
-        connection.audio.ValueChanged(connection.audioToken);
+        try { connection.audio.ValueChanged(connection.audioToken); } catch (...) {
+            LogMessage(L"RC003 AUDIO subscription cleanup failed", LogLevel::Warning);
+        }
         connection.audioSubscribed = false;
     }
     if (connection.controlSubscribed) {
-        connection.control.ValueChanged(connection.controlToken);
+        try { connection.control.ValueChanged(connection.controlToken); } catch (...) {
+            LogMessage(L"RC003 CTL subscription cleanup failed", LogLevel::Warning);
+        }
         connection.controlSubscribed = false;
     }
     CloseGattObject(connection.service);
@@ -257,8 +262,11 @@ GattConnection ConnectGatt(const std::wstring& instanceId) {
 
 } // namespace
 
-VoiceReceiver::VoiceReceiver(std::wstring deviceInstanceId, std::int32_t audioGainDb, VoiceAudioSession::LevelCallback level, StatusCallback status)
-    : deviceInstanceId_(std::move(deviceInstanceId)), audioGainDb_(audioGainDb), level_(std::move(level)), statusCallback_(std::move(status)), state_(std::make_shared<State>()) {}
+VoiceReceiver::VoiceReceiver(std::wstring deviceInstanceId, std::int32_t audioGainDb,
+    VoiceAudioSession::LevelCallback level, StatusCallback status, IssueCallback issue)
+    : deviceInstanceId_(std::move(deviceInstanceId)), audioGainDb_(audioGainDb),
+      level_(std::move(level)), statusCallback_(std::move(status)), issueCallback_(std::move(issue)),
+      state_(std::make_shared<State>()) {}
 
 VoiceReceiver::~VoiceReceiver() { Stop(); }
 
@@ -318,10 +326,31 @@ void VoiceReceiver::Run() {
     std::optional<GattConnection> connection;
     std::unique_ptr<VoiceAudioSession> session;
     bool apartmentInitialized = false;
+    bool connected = false;
+    auto publishIssue = [this](const char* code, const char* message, DWORD nativeError,
+                               bool recoverable = true) noexcept {
+        if (!issueCallback_) return;
+        try {
+            axonkey::rpc::ServiceIssue issue;
+            issue.code = code;
+            issue.message = message;
+            issue.nativeError = nativeError;
+            issue.recoverable = recoverable;
+            issue.timestampMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+            for (const auto ch : deviceInstanceId_) {
+                if (ch < 0x80) issue.deviceInstanceId.push_back(static_cast<char>(ch));
+            }
+            issueCallback_(issue);
+        } catch (...) {
+            LogMessage(L"RC003 issue notification failed", LogLevel::Warning);
+        }
+    };
     try {
         init_apartment(apartment_type::multi_threaded);
         apartmentInitialized = true;
         connection = ConnectGatt(deviceInstanceId_);
+        connected = true;
         const auto initialBattery = ReadBatteryLevel(connection->device);
         {
             std::lock_guard lock(state->mutex);
@@ -336,22 +365,31 @@ void VoiceReceiver::Run() {
         }
         if (statusCallback_) statusCallback_(Status());
         session = std::make_unique<VoiceAudioSession>(state->microphone,
-            [&](const auto& bytes) { WriteCharacteristic(connection->transmit, bytes); }, audioGainDb_.load(), level_);
+            [&](const auto& bytes) { WriteCharacteristic(connection->transmit, bytes); }, audioGainDb_.load(), level_,
+            [&](const char* code, DWORD error) {
+                publishIssue(code, std::strcmp(code, "virtual_microphone_unavailable") == 0
+                    ? "VirtualMicrophone driver is unavailable"
+                    : "VirtualMicrophone write failed", error);
+            });
         auto weak = std::weak_ptr<State>(state);
         auto audioHandler = TypedEventHandler<GattCharacteristic, GattValueChangedEventArgs>(
-            [weak](auto const&, auto const& args) {
+            [weak, publishIssue](auto const&, auto const& args) {
                 if (auto locked = weak.lock()) {
                     try { EnqueueEvent(locked, true, EventBytes(args)); }
                     catch (const hresult_error& error) { LogError(L"RC003 AUDIO callback", error); }
-                    catch (...) { LogMessage(L"RC003 AUDIO callback failed", LogLevel::Error); }
+                    catch (const std::bad_alloc&) {
+                        publishIssue("memory_allocation_failed", "RC003 AUDIO event allocation failed", ERROR_NOT_ENOUGH_MEMORY);
+                    } catch (...) { LogMessage(L"RC003 AUDIO callback failed", LogLevel::Error); }
                 }
             });
         auto controlHandler = TypedEventHandler<GattCharacteristic, GattValueChangedEventArgs>(
-            [weak](auto const&, auto const& args) {
+            [weak, publishIssue](auto const&, auto const& args) {
                 if (auto locked = weak.lock()) {
                     try { EnqueueEvent(locked, false, EventBytes(args)); }
                     catch (const hresult_error& error) { LogError(L"RC003 CTL callback", error); }
-                    catch (...) { LogMessage(L"RC003 CTL callback failed", LogLevel::Error); }
+                    catch (const std::bad_alloc&) {
+                        publishIssue("memory_allocation_failed", "RC003 CTL event allocation failed", ERROR_NOT_ENOUGH_MEMORY);
+                    } catch (...) { LogMessage(L"RC003 CTL callback failed", LogLevel::Error); }
                 }
             });
         connection->audioToken = connection->audio.ValueChanged(audioHandler);
@@ -405,8 +443,17 @@ void VoiceReceiver::Run() {
         }
     } catch (const hresult_error& error) {
         LogError(L"RC003 voice receiver", error);
+        publishIssue(connected ? "bluetooth_runtime_failed" : "bluetooth_initialization_failed",
+            connected ? "RC003 Bluetooth voice channel stopped" : "RC003 Bluetooth initialization failed",
+            static_cast<DWORD>(error.code()));
+    } catch (const std::bad_alloc&) {
+        LogMessage(L"RC003 voice receiver ran out of memory", LogLevel::Error);
+        publishIssue("memory_allocation_failed", "RC003 voice receiver ran out of memory", ERROR_NOT_ENOUGH_MEMORY);
     } catch (...) {
         LogMessage(L"RC003 voice receiver stopped by an unknown error", LogLevel::Error);
+        publishIssue(connected ? "bluetooth_runtime_failed" : "bluetooth_initialization_failed",
+            connected ? "RC003 Bluetooth voice channel stopped" : "RC003 Bluetooth initialization failed",
+            ERROR_GEN_FAILURE);
     }
 
     // Reject any in-flight callback before releasing the producer mapping. The
@@ -440,8 +487,15 @@ void VoiceReceiver::Run() {
         try { uninit_apartment(); } catch (...) {}
     }
     LogMessage(L"RC003 voice receiver stopped; device=" + deviceInstanceId_);
-    if (statusCallback_) statusCallback_(Status());
-    MarkFinished(state);
+    try {
+        if (statusCallback_) statusCallback_(Status());
+    } catch (const std::bad_alloc&) {
+        publishIssue("memory_allocation_failed", "RC003 status notification allocation failed", ERROR_NOT_ENOUGH_MEMORY);
+    } catch (...) {
+        LogMessage(L"RC003 final status notification failed", LogLevel::Warning);
+    }
+    try { MarkFinished(state); }
+    catch (...) { LogMessage(L"RC003 worker completion state update failed", LogLevel::Warning); }
 }
 
 } // namespace axonkey_service

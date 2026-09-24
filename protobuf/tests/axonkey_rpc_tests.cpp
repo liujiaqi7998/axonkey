@@ -122,19 +122,34 @@ void TestKeyboardEventRoundTrip() {
 }
 
 void TestSubscribeAndGain() {
-    axonkey::rpc::Subscribe sub{true, false, true};
+    axonkey::rpc::Subscribe sub{true, false, true, true};
     auto bytes = axonkey::rpc::Serialize(sub);
     axonkey::rpc::Subscribe outSub;
     Expect(axonkey::rpc::Parse(bytes, outSub), "subscribe parse");
     ExpectEq(outSub.keyboard, true, "sub kb");
     ExpectEq(outSub.audioLevel, false, "sub al");
     ExpectEq(outSub.voiceStatus, true, "sub vs");
+    ExpectEq(outSub.serviceIssues, true, "sub issues");
 
     axonkey::rpc::SetAudioGain gain{-6};
     bytes = axonkey::rpc::Serialize(gain);
     axonkey::rpc::SetAudioGain outGain;
     Expect(axonkey::rpc::Parse(bytes, outGain), "gain parse");
     ExpectEq(outGain.gainDb, std::int32_t{-6}, "gain db");
+}
+
+void TestServiceIssueRoundTrip() {
+    axonkey::rpc::ServiceIssue in{"virtual_microphone_unavailable",
+        "VirtualMicrophone driver is unavailable", "HID\\RC003", 2, true, 123};
+    const auto bytes = axonkey::rpc::Serialize(in);
+    axonkey::rpc::ServiceIssue out;
+    Expect(axonkey::rpc::Parse(bytes, out), "service issue parse");
+    ExpectEq(out.code, in.code, "issue code");
+    ExpectEq(out.message, in.message, "issue message");
+    ExpectEq(out.deviceInstanceId, in.deviceInstanceId, "issue device");
+    ExpectEq(out.nativeError, in.nativeError, "issue native error");
+    ExpectEq(out.recoverable, in.recoverable, "issue recoverable");
+    ExpectEq(out.timestampMs, in.timestampMs, "issue timestamp");
 }
 
 void TestResponseEventVoice() {
@@ -197,6 +212,7 @@ int main() {
     TestAudioLevelRoundTrip();
     TestKeyboardEventRoundTrip();
     TestSubscribeAndGain();
+    TestServiceIssueRoundTrip();
     TestResponseEventVoice();
     TestRejectOversizedField();
     TestKnownWireGain();

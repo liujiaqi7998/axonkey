@@ -23,6 +23,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <chrono>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -32,6 +33,8 @@
 #include <functional>
 #include <cstdint>
 #include <optional>
+#include <new>
+#include <system_error>
 
 namespace {
 using axonkey_service::IsRc003;
@@ -220,8 +223,11 @@ std::vector<EndpointInfo> EnumerateEndpoints() {
 class Endpoint final {
 public:
     using ReportCallback = std::function<void(const std::wstring&, const std::vector<std::uint8_t>&)>;
-    Endpoint(std::wstring path, std::wstring instance, ReportCallback reportCallback)
-        : path_(std::move(path)), instance_(std::move(instance)), reportCallback_(std::move(reportCallback)) {
+    using IssueCallback = std::function<void(const std::wstring&, const char*, DWORD)>;
+    Endpoint(std::wstring path, std::wstring instance, ReportCallback reportCallback,
+             IssueCallback issueCallback = {})
+        : path_(std::move(path)), instance_(std::move(instance)),
+          reportCallback_(std::move(reportCallback)), issueCallback_(std::move(issueCallback)) {
         handle_ = CreateFileW(path_.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
             OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
         if (handle_ == INVALID_HANDLE_VALUE) {
@@ -293,7 +299,18 @@ private:
         }
         return GetOverlappedResult(handle_, &controlOverlapped_, &returned, FALSE) != FALSE;
     }
-    void ReadLoop() {
+    void ReadLoop() noexcept {
+        try {
+            ReadLoopImpl();
+        } catch (const std::bad_alloc&) {
+            valid_ = false;
+            ReportIssue("memory_allocation_failed", ERROR_NOT_ENOUGH_MEMORY);
+        } catch (...) {
+            valid_ = false;
+            ReportIssue("hid_filter_driver_error", ERROR_GEN_FAILURE);
+        }
+    }
+    void ReadLoopImpl() {
         while (WaitForSingleObject(stop_, 0) != WAIT_OBJECT_0) {
             ResetEvent(event_); ZeroMemory(&overlapped_, sizeof(overlapped_)); overlapped_.hEvent = event_;
             DWORD bytes = 0;
@@ -301,7 +318,9 @@ private:
                 report_.data(), static_cast<DWORD>(report_.size()), &bytes, &overlapped_);
             if (ok) { if (bytes) OnHidReport(report_.data(), bytes); continue; }
             if (GetLastError() != ERROR_IO_PENDING) {
-                LogWin32Error(L"HID read failed", GetLastError());
+                const auto error = GetLastError();
+                LogWin32Error(L"HID read failed", error);
+                ReportIssue("hid_filter_driver_error", error);
                 break;
             }
             HANDLE waits[] = {event_, stop_};
@@ -311,7 +330,9 @@ private:
                 break;
             }
             if (!GetOverlappedResult(handle_, &overlapped_, &bytes, FALSE)) {
-                LogWin32Error(L"HID read completion failed", GetLastError());
+                const auto error = GetLastError();
+                LogWin32Error(L"HID read completion failed", error);
+                ReportIssue("hid_filter_driver_error", error);
                 break;
             }
             if (bytes) OnHidReport(report_.data(), bytes);
@@ -323,12 +344,30 @@ private:
         // The RPC client may remain connected while this endpoint is removed.
         // Publish an empty report so the desktop releases held synthetic
         // output before the next endpoint is reconciled.
-        if (reportCallback_) reportCallback_(instance_, std::vector<std::uint8_t>{});
         valid_ = false;
+        try {
+            if (reportCallback_) reportCallback_(instance_, std::vector<std::uint8_t>{});
+        } catch (const std::bad_alloc&) {
+            ReportIssue("memory_allocation_failed", ERROR_NOT_ENOUGH_MEMORY);
+        } catch (...) {
+            ReportIssue("rpc_event_publish_failed", ERROR_GEN_FAILURE);
+        }
         LogMessage(L"HID reader stopped; device=" + instance_);
     }
     void OnHidReport(const UCHAR* report, DWORD bytes) {
-        if (reportCallback_ && bytes) reportCallback_(instance_, std::vector<std::uint8_t>(report, report + bytes));
+        if (!reportCallback_ || !bytes) return;
+        try {
+            reportCallback_(instance_, std::vector<std::uint8_t>(report, report + bytes));
+        } catch (const std::bad_alloc&) {
+            ReportIssue("memory_allocation_failed", ERROR_NOT_ENOUGH_MEMORY);
+        } catch (...) {
+            ReportIssue("hid_filter_driver_error", ERROR_GEN_FAILURE);
+        }
+    }
+    void ReportIssue(const char* code, DWORD error) noexcept {
+        if (!issueCallback_) return;
+        try { issueCallback_(instance_, code, error); }
+        catch (...) { LogMessage(L"HID issue notification failed", LogLevel::Warning); }
     }
     std::wstring path_, instance_;
     HANDLE handle_ = INVALID_HANDLE_VALUE, event_ = nullptr, stop_ = nullptr;
@@ -336,6 +375,7 @@ private:
     HANDLE controlEvent_ = nullptr;
     std::vector<UCHAR> report_;
     ReportCallback reportCallback_;
+    IssueCallback issueCallback_;
     std::thread reader_;
     std::atomic<bool> valid_{false};
     std::atomic<bool> inputBlocked_{false}, dataForwardEnabled_{false};
@@ -345,6 +385,49 @@ class Service final {
 public:
     static Service& Instance() { static Service value; return value; }
     DWORD Run() {
+        try {
+            return RunImpl();
+        } catch (const std::bad_alloc&) {
+            LogMessage(L"AxonkeyService stopped after an unrecoverable memory allocation failure", LogLevel::Error);
+            CleanupRuntime();
+            if (statusHandle_) UpdateStatus(SERVICE_STOPPED, 0);
+            return ERROR_NOT_ENOUGH_MEMORY;
+        } catch (const std::exception& error) {
+            LogMessage(std::string("AxonkeyService stopped after an unhandled exception: ") + error.what(), LogLevel::Error);
+            CleanupRuntime();
+            if (statusHandle_) UpdateStatus(SERVICE_STOPPED, 0);
+            return ERROR_UNHANDLED_EXCEPTION;
+        } catch (...) {
+            LogMessage(L"AxonkeyService stopped after an unknown exception", LogLevel::Error);
+            CleanupRuntime();
+            if (statusHandle_) UpdateStatus(SERVICE_STOPPED, 0);
+            return ERROR_UNHANDLED_EXCEPTION;
+        }
+    }
+    void RequestStop() { if (stopEvent_) SetEvent(stopEvent_); cv_.notify_all(); }
+    void RequestRescan() { cv_.notify_all(); }
+private:
+    void CleanupRuntime() noexcept {
+        if (stopEvent_) SetEvent(stopEvent_);
+        cv_.notify_all();
+        if (worker_.joinable()) {
+            try { worker_.join(); }
+            catch (...) { LogMessage(L"Joining AxonkeyService worker failed", LogLevel::Warning); }
+        }
+        if (rpc_) {
+            try { rpc_->Stop(); }
+            catch (...) { LogMessage(L"Stopping Axonkey RPC after service failure failed", LogLevel::Warning); }
+        }
+        if (notification_) {
+            UnregisterDeviceNotification(notification_);
+            notification_ = nullptr;
+        }
+        if (stopEvent_) {
+            CloseHandle(stopEvent_);
+            stopEvent_ = nullptr;
+        }
+    }
+    DWORD RunImpl() {
         axonkey_service::LogMessage(L"AxonkeyService starting");
         statusHandle_ = RegisterServiceCtrlHandlerExW(kServiceName, Handler, this);
         if (!statusHandle_) {
@@ -386,17 +469,11 @@ public:
         UpdateStatus(SERVICE_RUNNING);
         axonkey_service::LogMessage(L"AxonkeyService running");
         WaitForSingleObject(stopEvent_, INFINITE);
-        if (worker_.joinable()) worker_.join();
-        if (rpc_) rpc_->Stop();
-        if (notification_) UnregisterDeviceNotification(notification_);
-        CloseHandle(stopEvent_); stopEvent_ = nullptr;
+        CleanupRuntime();
         UpdateStatus(SERVICE_STOPPED);
         axonkey_service::LogMessage(L"AxonkeyService stopped");
         return 0;
     }
-    void RequestStop() { if (stopEvent_) SetEvent(stopEvent_); cv_.notify_all(); }
-    void RequestRescan() { cv_.notify_all(); }
-private:
     static DWORD WINAPI Handler(DWORD control, DWORD eventType, void* data, void* context) {
         (void)data;
         auto* self = static_cast<Service*>(context);
@@ -417,15 +494,48 @@ private:
         if (statusHandle_ && !::SetServiceStatus(statusHandle_, &status_))
             LogWin32Error(L"Updating service status failed", GetLastError());
     }
-    void Worker() {
+    void ReportIssue(const char* code, const char* message, const std::wstring& device = {},
+                     DWORD nativeError = ERROR_SUCCESS, bool recoverable = true) noexcept {
+        try {
+            axonkey::rpc::ServiceIssue issue;
+            issue.code = code;
+            issue.message = message;
+            issue.nativeError = nativeError;
+            issue.recoverable = recoverable;
+            issue.timestampMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+            for (const auto ch : device) if (ch < 0x80) issue.deviceInstanceId.push_back(static_cast<char>(ch));
+            LogMessage(std::string("Service issue [") + code + "] " + message, LogLevel::Warning);
+            if (rpc_) rpc_->PublishServiceIssue(issue);
+        } catch (...) {
+            LogMessage(L"Failed to publish service issue", LogLevel::Warning);
+        }
+    }
+    void Worker() noexcept {
+        try {
+            WorkerImpl();
+        } catch (const std::bad_alloc&) {
+            ReportIssue("memory_allocation_failed", "Device worker ran out of memory", {}, ERROR_NOT_ENOUGH_MEMORY);
+        } catch (...) {
+            ReportIssue("device_reconciliation_failed", "Device worker stopped after an unexpected exception", {});
+        }
+    }
+    void WorkerImpl() {
         axonkey_service::LogMessage(L"Audio gain loaded: " + std::to_wstring(config_.audioGainDb) +
             L" dB; service enabled=" + std::to_wstring(enabled_.load() ? 1 : 0));
         while (WaitForSingleObject(stopEvent_, 0) != WAIT_OBJECT_0) {
             try { Reconcile(); }
+            catch (const std::bad_alloc&) {
+                ReportIssue("memory_allocation_failed", "Device reconciliation ran out of memory", {}, ERROR_NOT_ENOUGH_MEMORY);
+            }
             catch (const std::exception& error) {
                 LogMessage(std::string("Device reconciliation failed; retrying: ") + error.what(), LogLevel::Error);
+                ReportIssue("device_reconciliation_failed", "Device reconciliation failed; retrying");
             }
-            catch (...) { LogMessage(L"Device reconciliation failed with an unknown exception; retrying", LogLevel::Error); }
+            catch (...) {
+                LogMessage(L"Device reconciliation failed with an unknown exception; retrying", LogLevel::Error);
+                ReportIssue("device_reconciliation_failed", "Device reconciliation failed; retrying");
+            }
             std::unique_lock lock(mutex_);
             cv_.wait_for(lock, std::chrono::seconds(2));
         }
@@ -443,20 +553,32 @@ private:
         // and HID workers.
         if (!enabled_.load(std::memory_order_acquire)) return;
         std::vector<std::wstring> targets;
+        std::vector<quarbor::KeyboardDevice> devices;
         try {
-            for (const auto& device : quarbor::EnumerateHidKeyboards(true)) if (IsRc003(device.instanceId)) {
-                targets.push_back(device.instanceId);
-                if (!device.attachmentConfigured) {
-                    quarbor::SetDeviceAttachment(device.instanceId, true, true);
-                    LogMessage(L"HID filter attached; device=" + device.instanceId);
-                }
-            }
+            devices = quarbor::EnumerateHidKeyboards(true);
         } catch (const std::exception& error) {
             LogMessage(std::string("Device discovery/filter attachment failed; retrying: ") + error.what(), LogLevel::Error);
+            ReportIssue("hid_filter_driver_error", "Quarbor HID Filter Driver communication failed");
             return;
         } catch (...) {
             LogMessage(L"Device discovery/filter attachment failed; retrying", LogLevel::Error);
+            ReportIssue("hid_filter_driver_error", "Quarbor HID Filter Driver communication failed");
             return;
+        }
+        for (const auto& device : devices) if (IsRc003(device.instanceId)) {
+            targets.push_back(device.instanceId);
+            if (!device.attachmentConfigured) {
+                try {
+                    quarbor::SetDeviceAttachment(device.instanceId, true, true);
+                    LogMessage(L"HID filter attached; device=" + device.instanceId);
+                } catch (const std::system_error& error) {
+                    ReportIssue("hid_filter_driver_error", "Quarbor HID Filter Driver attachment failed",
+                        device.instanceId, static_cast<DWORD>(error.code().value()));
+                } catch (...) {
+                    ReportIssue("hid_filter_driver_error", "Quarbor HID Filter Driver attachment failed",
+                        device.instanceId, ERROR_GEN_FAILURE);
+                }
+            }
         }
         auto endpoints = EnumerateEndpoints();
         std::lock_guard lock(mutex_);
@@ -472,36 +594,69 @@ private:
         }
         for (const auto& target : targets) {
             if (voices_.find(target) == voices_.end()) {
-                auto receiver = std::make_shared<axonkey_service::VoiceReceiver>(target, config_.audioGainDb,
-                    [this](float peak, float rms) {
-                        axonkey::rpc::AudioLevel level;
-                        level.peak = peak;
-                        level.rms = rms;
-                        level.timestampMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::system_clock::now().time_since_epoch()).count());
-                        {
-                            std::lock_guard levelLock(levelMutex_);
-                            latestAudioLevel_ = level;
-                        }
-                        if (rpc_) rpc_->PublishAudioLevel(level);
-                    },
-                    [this](const axonkey::rpc::VoiceStatus& status) {
-                        if (rpc_) rpc_->PublishVoiceStatus(status);
-                    });
-                receiver->Start();
-                voices_.emplace(target, std::move(receiver));
+                try {
+                    auto receiver = std::make_shared<axonkey_service::VoiceReceiver>(target, config_.audioGainDb,
+                        [this](float peak, float rms) {
+                            axonkey::rpc::AudioLevel level;
+                            level.peak = peak;
+                            level.rms = rms;
+                            level.timestampMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch()).count());
+                            {
+                                std::lock_guard levelLock(levelMutex_);
+                                latestAudioLevel_ = level;
+                            }
+                            if (rpc_) rpc_->PublishAudioLevel(level);
+                        },
+                        [this](const axonkey::rpc::VoiceStatus& status) {
+                            if (rpc_) rpc_->PublishVoiceStatus(status);
+                        },
+                        [this](const axonkey::rpc::ServiceIssue& issue) {
+                            try {
+                                if (rpc_) rpc_->PublishServiceIssue(issue);
+                            } catch (...) {
+                                LogMessage(L"Failed to publish RC003 voice issue", LogLevel::Warning);
+                            }
+                        });
+                    receiver->Start();
+                    voices_.emplace(target, std::move(receiver));
+                } catch (const std::bad_alloc&) {
+                    ReportIssue("memory_allocation_failed", "Could not allocate RC003 voice worker", target, ERROR_NOT_ENOUGH_MEMORY);
+                } catch (...) {
+                    ReportIssue("bluetooth_initialization_failed", "Could not start RC003 Bluetooth worker", target, ERROR_GEN_FAILURE);
+                }
             }
         }
         for (const auto& endpoint : endpoints) {
             if (!IsRc003(endpoint.instanceId) || std::find(targets.begin(), targets.end(), endpoint.instanceId) == targets.end()) continue;
             auto existing = std::find_if(active_.begin(), active_.end(), [&](const auto& e) { return e->Path() == endpoint.path; });
             if (existing != active_.end()) continue;
-            auto connection = std::make_shared<Endpoint>(endpoint.path, endpoint.instanceId,
-                [this](const std::wstring& device, const std::vector<std::uint8_t>& report) {
-                    if (rpc_) rpc_->PublishKeyboard(WideToUtf8(device), report);
-                });
-            if (connection->Valid()) { connection->Start(); active_.push_back(std::move(connection)); }
-            else LogMessage(L"HID endpoint initialization failed; retrying; device=" + endpoint.instanceId, LogLevel::Warning);
+            try {
+                auto connection = std::make_shared<Endpoint>(endpoint.path, endpoint.instanceId,
+                    [this](const std::wstring& device, const std::vector<std::uint8_t>& report) {
+                        try {
+                            if (rpc_) rpc_->PublishKeyboard(WideToUtf8(device), report);
+                        } catch (const std::bad_alloc&) {
+                            ReportIssue("memory_allocation_failed", "Could not publish HID report", device, ERROR_NOT_ENOUGH_MEMORY);
+                        } catch (...) {
+                            ReportIssue("rpc_event_publish_failed", "Could not publish HID report", device, ERROR_GEN_FAILURE);
+                        }
+                    },
+                    [this](const std::wstring& device, const char* code, DWORD error) {
+                        ReportIssue(code, std::strcmp(code, "memory_allocation_failed") == 0
+                            ? "Could not allocate HID report" : "Quarbor HID endpoint communication failed",
+                            device, error);
+                    });
+                if (connection->Valid()) { connection->Start(); active_.push_back(std::move(connection)); }
+                else {
+                    LogMessage(L"HID endpoint initialization failed; retrying; device=" + endpoint.instanceId, LogLevel::Warning);
+                    ReportIssue("hid_filter_driver_error", "Quarbor HID endpoint communication failed", endpoint.instanceId);
+                }
+            } catch (const std::bad_alloc&) {
+                ReportIssue("memory_allocation_failed", "Could not allocate HID endpoint worker", endpoint.instanceId, ERROR_NOT_ENOUGH_MEMORY);
+            } catch (...) {
+                ReportIssue("hid_filter_driver_error", "Quarbor HID endpoint initialization failed", endpoint.instanceId, ERROR_GEN_FAILURE);
+            }
         }
     }
     void StopEndpoints() {

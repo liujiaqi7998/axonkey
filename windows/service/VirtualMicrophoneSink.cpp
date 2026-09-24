@@ -14,6 +14,15 @@ using Clock = std::chrono::steady_clock;
 constexpr ULONG kChunkBytes = 960;
 constexpr auto kStallTimeout = std::chrono::milliseconds(250);
 
+DWORD SafeCopy(void* destination, const void* source, size_t bytes) noexcept {
+    __try {
+        std::memcpy(destination, source, bytes);
+        return ERROR_SUCCESS;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return GetExceptionCode();
+    }
+}
+
 void LogFailure(const wchar_t* operation, DWORD error) {
     LogMessage(std::wstring(L"Quarbor Virtual Microphone: ") + operation +
         L" failed; Win32=" + std::to_wstring(error), LogLevel::Error);
@@ -49,9 +58,14 @@ VirtualMicrophoneSink::~VirtualMicrophoneSink() { Stop(); }
 
 bool VirtualMicrophoneSink::Control(DWORD code, const void* input, DWORD inputBytes,
     void* output, DWORD outputBytes, DWORD* returned) {
+    if (!transport_) {
+        SetError(ERROR_INVALID_HANDLE);
+        return false;
+    }
     DWORD bytes = 0;
     if (!transport_->Control(code, input, inputBytes, output, outputBytes, bytes)) {
         const auto error = GetLastError();
+        SetError(error);
         LogMessage(L"Quarbor Virtual Microphone: IOCTL=" + std::to_wstring(code) +
             L" failed; Win32=" + std::to_wstring(error), LogLevel::Error);
         return false;
@@ -62,10 +76,13 @@ bool VirtualMicrophoneSink::Control(DWORD code, const void* input, DWORD inputBy
 
 bool VirtualMicrophoneSink::Start() {
     std::lock_guard lock(mutex_);
+    lastError_.store(ERROR_SUCCESS);
     if (cancelled_) return false;
     if (started_) return true;
     if (!transport_->Open()) {
-        LogFailure(L"open QuarborVirtualMicrophone (exclusive producer)", GetLastError());
+        const auto error = GetLastError();
+        SetError(error == ERROR_SUCCESS ? ERROR_FILE_NOT_FOUND : error);
+        LogFailure(L"open QuarborVirtualMicrophone (exclusive producer)", LastError());
         return false;
     }
     opened_ = true;
@@ -81,6 +98,7 @@ bool VirtualMicrophoneSink::Start() {
         mapping.BufferBytes % QUARBOR_MIC_BLOCK_ALIGN ||
         mapping.SampleRate != QUARBOR_MIC_SAMPLE_RATE || mapping.Channels != 1 ||
         mapping.BitsPerSample != 16 || mapping.BlockAlign != 2) {
+        SetError(ERROR_REVISION_MISMATCH);
         LogMessage(L"Quarbor Virtual Microphone: incompatible MAP_RING response; expected 48000 Hz mono PCM16", LogLevel::Error);
         CloseLocked();
         return false;
@@ -110,6 +128,7 @@ bool VirtualMicrophoneSink::Query(QUARBOR_MIC_STATE& state) {
         state.AvailableBytes != state.WritePosition - state.ReadPosition ||
         state.FreeBytes != bufferBytes_ - state.AvailableBytes ||
         (state.WritePosition | state.ReadPosition | state.FreeBytes) % 2) {
+        SetError(ERROR_INVALID_DATA);
         LogMessage(L"Quarbor Virtual Microphone: invalid/offline QUERY_STATE response", LogLevel::Error);
         return false;
     }
@@ -143,8 +162,15 @@ bool VirtualMicrophoneSink::Push(std::span<const std::int16_t> samples) {
         }
         const auto position = static_cast<ULONG>(state.WritePosition % bufferBytes_);
         const auto first = std::min(count, bufferBytes_ - position);
-        std::memcpy(ring_ + position, bytes + offset, first);
-        if (count > first) std::memcpy(ring_, bytes + offset + first, count - first);
+        const auto memoryError = SafeCopy(ring_ + position, bytes + offset, first);
+        const auto wrappedMemoryError = memoryError == ERROR_SUCCESS && count > first
+            ? SafeCopy(ring_, bytes + offset + first, count - first) : memoryError;
+        if (wrappedMemoryError != ERROR_SUCCESS) {
+            SetError(wrappedMemoryError);
+            LogMessage(L"Quarbor Virtual Microphone: ring buffer memory write failed; exception=" +
+                std::to_wstring(LastError()), LogLevel::Error);
+            return false;
+        }
         MemoryBarrier();
         QUARBOR_MIC_COMMIT commit{sizeof(commit), QUARBOR_MIC_API_VERSION,
             state.Generation, state.WritePosition, count, 0};

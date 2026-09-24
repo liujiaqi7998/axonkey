@@ -117,11 +117,23 @@ typedef struct _axonkey_service_v1_SubscribeRequest {
     bool keyboard;
     bool audio_level;
     bool voice_status;
+    bool service_issues;
 } axonkey_service_v1_SubscribeRequest;
+
+/* Recoverable service conditions are delivered out-of-band so a device,
+ driver, or Bluetooth failure does not have to tear down the RPC session. */
+typedef struct _axonkey_service_v1_ServiceIssue {
+    pb_callback_t code;
+    pb_callback_t message;
+    pb_callback_t device_instance_id;
+    uint32_t native_error;
+    bool recoverable;
+    uint64_t timestamp_ms;
+} axonkey_service_v1_ServiceIssue;
 
 /* Events use a stable type name and a payload message so the server can add
  event kinds without changing the pipe framing. The payload is one of the
- KeyboardEvent, AudioLevel, or VoiceStatus messages above. */
+ KeyboardEvent, AudioLevel, VoiceStatus, or ServiceIssue messages above. */
 typedef struct _axonkey_service_v1_Event {
     pb_callback_t type;
     pb_callback_t payload;
@@ -151,7 +163,8 @@ extern "C" {
 #define axonkey_service_v1_VoiceStatus_init_default {{{NULL}, NULL}, {{NULL}, NULL}, 0, 0, 0, 0, 0}
 #define axonkey_service_v1_AudioLevel_init_default {0, 0, 0}
 #define axonkey_service_v1_KeyboardEvent_init_default {{{NULL}, NULL}, {{NULL}, NULL}, 0}
-#define axonkey_service_v1_SubscribeRequest_init_default {0, 0, 0}
+#define axonkey_service_v1_SubscribeRequest_init_default {0, 0, 0, 0}
+#define axonkey_service_v1_ServiceIssue_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, 0, 0}
 #define axonkey_service_v1_Event_init_default    {{{NULL}, NULL}, {{NULL}, NULL}}
 #define axonkey_service_v1_Request_init_zero     {0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define axonkey_service_v1_Response_init_zero    {0, 0, {{NULL}, NULL}, {{NULL}, NULL}}
@@ -171,7 +184,8 @@ extern "C" {
 #define axonkey_service_v1_VoiceStatus_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, 0, 0, 0, 0, 0}
 #define axonkey_service_v1_AudioLevel_init_zero  {0, 0, 0}
 #define axonkey_service_v1_KeyboardEvent_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, 0}
-#define axonkey_service_v1_SubscribeRequest_init_zero {0, 0, 0}
+#define axonkey_service_v1_SubscribeRequest_init_zero {0, 0, 0, 0}
+#define axonkey_service_v1_ServiceIssue_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, 0, 0}
 #define axonkey_service_v1_Event_init_zero       {{{NULL}, NULL}, {{NULL}, NULL}}
 
 /* Field tags (for use in manual encoding/decoding) */
@@ -218,6 +232,13 @@ extern "C" {
 #define axonkey_service_v1_SubscribeRequest_keyboard_tag 1
 #define axonkey_service_v1_SubscribeRequest_audio_level_tag 2
 #define axonkey_service_v1_SubscribeRequest_voice_status_tag 3
+#define axonkey_service_v1_SubscribeRequest_service_issues_tag 4
+#define axonkey_service_v1_ServiceIssue_code_tag 1
+#define axonkey_service_v1_ServiceIssue_message_tag 2
+#define axonkey_service_v1_ServiceIssue_device_instance_id_tag 3
+#define axonkey_service_v1_ServiceIssue_native_error_tag 4
+#define axonkey_service_v1_ServiceIssue_recoverable_tag 5
+#define axonkey_service_v1_ServiceIssue_timestamp_ms_tag 6
 #define axonkey_service_v1_Event_type_tag        1
 #define axonkey_service_v1_Event_payload_tag     2
 
@@ -343,9 +364,20 @@ X(a, STATIC,   SINGULAR, UINT64,   timestamp_ms,      3)
 #define axonkey_service_v1_SubscribeRequest_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, BOOL,     keyboard,          1) \
 X(a, STATIC,   SINGULAR, BOOL,     audio_level,       2) \
-X(a, STATIC,   SINGULAR, BOOL,     voice_status,      3)
+X(a, STATIC,   SINGULAR, BOOL,     voice_status,      3) \
+X(a, STATIC,   SINGULAR, BOOL,     service_issues,    4)
 #define axonkey_service_v1_SubscribeRequest_CALLBACK NULL
 #define axonkey_service_v1_SubscribeRequest_DEFAULT NULL
+
+#define axonkey_service_v1_ServiceIssue_FIELDLIST(X, a) \
+X(a, CALLBACK, SINGULAR, STRING,   code,              1) \
+X(a, CALLBACK, SINGULAR, STRING,   message,           2) \
+X(a, CALLBACK, SINGULAR, STRING,   device_instance_id,   3) \
+X(a, STATIC,   SINGULAR, UINT32,   native_error,      4) \
+X(a, STATIC,   SINGULAR, BOOL,     recoverable,       5) \
+X(a, STATIC,   SINGULAR, UINT64,   timestamp_ms,      6)
+#define axonkey_service_v1_ServiceIssue_CALLBACK pb_default_field_callback
+#define axonkey_service_v1_ServiceIssue_DEFAULT NULL
 
 #define axonkey_service_v1_Event_FIELDLIST(X, a) \
 X(a, CALLBACK, SINGULAR, STRING,   type,              1) \
@@ -372,6 +404,7 @@ extern const pb_msgdesc_t axonkey_service_v1_VoiceStatus_msg;
 extern const pb_msgdesc_t axonkey_service_v1_AudioLevel_msg;
 extern const pb_msgdesc_t axonkey_service_v1_KeyboardEvent_msg;
 extern const pb_msgdesc_t axonkey_service_v1_SubscribeRequest_msg;
+extern const pb_msgdesc_t axonkey_service_v1_ServiceIssue_msg;
 extern const pb_msgdesc_t axonkey_service_v1_Event_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
@@ -394,6 +427,7 @@ extern const pb_msgdesc_t axonkey_service_v1_Event_msg;
 #define axonkey_service_v1_AudioLevel_fields &axonkey_service_v1_AudioLevel_msg
 #define axonkey_service_v1_KeyboardEvent_fields &axonkey_service_v1_KeyboardEvent_msg
 #define axonkey_service_v1_SubscribeRequest_fields &axonkey_service_v1_SubscribeRequest_msg
+#define axonkey_service_v1_ServiceIssue_fields &axonkey_service_v1_ServiceIssue_msg
 #define axonkey_service_v1_Event_fields &axonkey_service_v1_Event_msg
 
 /* Maximum encoded size of messages (where known) */
@@ -405,6 +439,7 @@ extern const pb_msgdesc_t axonkey_service_v1_Event_msg;
 /* axonkey_service_v1_Device_size depends on runtime parameters */
 /* axonkey_service_v1_VoiceStatus_size depends on runtime parameters */
 /* axonkey_service_v1_KeyboardEvent_size depends on runtime parameters */
+/* axonkey_service_v1_ServiceIssue_size depends on runtime parameters */
 /* axonkey_service_v1_Event_size depends on runtime parameters */
 #define AXONKEY_SERVICE_V1_AXONKEY_SERVICE_PB_H_MAX_SIZE axonkey_service_v1_AudioLevel_size
 #define axonkey_service_v1_AudioLevelRequest_size 0
@@ -416,7 +451,7 @@ extern const pb_msgdesc_t axonkey_service_v1_Event_msg;
 #define axonkey_service_v1_SetAudioGainRequest_size 11
 #define axonkey_service_v1_SetServiceEnableRequest_size 2
 #define axonkey_service_v1_SetServiceStatusRequest_size 2
-#define axonkey_service_v1_SubscribeRequest_size 6
+#define axonkey_service_v1_SubscribeRequest_size 8
 #define axonkey_service_v1_VoiceStatusRequest_size 0
 
 #ifdef __cplusplus

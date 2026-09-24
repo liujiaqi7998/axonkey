@@ -57,6 +57,14 @@ button { cursor: pointer; }
 .topbar { position: relative; flex-shrink: 0; z-index: 10; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; column-gap: 16px; height: var(--topbar-height); padding: 6px 30px; border-bottom: 1px solid #d8dade; background: #f4f5f6; }
 /* Keep the disabled state visible after setup and on both main pages. */
 .mapping-disabled-notice { position: sticky; top: 0; z-index: 9; height: var(--disabled-notice-height); display: flex; align-items: center; gap: 12px; width: min(1180px, calc(100% - 72px)); margin: 16px auto 0; padding: 14px 16px; border: 1px solid #e6d3a9; border-radius: 8px; color: #795a23; background: #fff8e9; }
+.windows-service-issue { position: relative; z-index: 2; display: flex; align-items: flex-start; gap: 11px; width: min(1180px, calc(100% - 72px)); margin: 12px auto 0; padding: 12px 14px; border: 1px solid #e4c38b; border-radius: 8px; color: #704d1f; background: #fff8e9; }
+.windows-service-issue > svg { flex: 0 0 auto; margin-top: 1px; color: #b47725; }
+.windows-service-issue-copy { min-width: 0; flex: 1; }
+.windows-service-issue-copy strong { display: block; font-size: 13px; }
+.windows-service-issue-copy p { margin-top: 3px; color: #80663d; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+.windows-service-issue-close { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; margin: -3px -4px 0 0; padding: 0; border: 0; border-radius: 5px; color: #8b6a3d; background: transparent; }
+.windows-service-issue-close:hover { color: #5d401d; background: rgba(180, 119, 37, .1); }
+.windows-service-issue-close:focus-visible { outline: 2px solid #b47725; outline-offset: 2px; }
 .mapping-disabled-notice > svg { flex-shrink: 0; }
 .mapping-disabled-copy { flex: 1; min-width: 0; }
 .mapping-disabled-copy strong { font-size: 14px; }
@@ -67,7 +75,7 @@ button { cursor: pointer; }
 .mapping-enable-button:focus-visible { outline: 2px solid #805b20; outline-offset: 3px; }
 .mapping-active .mapping-disabled-notice { width: min(1440px, calc(100% - 48px)); }
 @media (max-width: 1000px) {
-  .mapping-disabled-notice, .mapping-active .mapping-disabled-notice { width: calc(100% - 28px); }
+  .mapping-disabled-notice, .mapping-active .mapping-disabled-notice, .windows-service-issue { width: calc(100% - 28px); }
 }
 
 .topbar-left { display: flex; align-items: center; gap: 24px; min-width: 0; }

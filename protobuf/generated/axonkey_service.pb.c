@@ -63,6 +63,9 @@ PB_BIND(axonkey_service_v1_KeyboardEvent, axonkey_service_v1_KeyboardEvent, AUTO
 PB_BIND(axonkey_service_v1_SubscribeRequest, axonkey_service_v1_SubscribeRequest, AUTO)
 
 
+PB_BIND(axonkey_service_v1_ServiceIssue, axonkey_service_v1_ServiceIssue, AUTO)
+
+
 PB_BIND(axonkey_service_v1_Event, axonkey_service_v1_Event, AUTO)
 
 

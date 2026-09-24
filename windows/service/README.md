@@ -92,10 +92,18 @@ PCM，再写入虚拟麦克风。虚拟麦克风已被其他语音线程占用�
 完成，C++ 封装位于 `protobuf/axonkey_rpc.*`，生成代码在 `protobuf/generated/`。
 桌面端可通过 `GetServiceInfo`（其中包含当前 `audio_gain_db`）、
 `GetServiceStatus`、`SetServiceStatus`、`SetServiceEnable`、`SetAudioGain`、`GetDevices`、`GetVoiceStatus`、`GetAudioLevel` 查询或控制服务，
-并通过 `Subscribe` 订阅 `keyboard`、`audio_level`、`voice_status` 事件。键盘报告来自
+并通过 `Subscribe` 订阅 `keyboard`、`audio_level`、`voice_status`、`service_issue` 事件。键盘报告来自
 已挂载并拦截输入的 Quarbor 端点，音频电平来自增益处理后的 PCM 样本。
 `GetDevices` 的每个 `Device` 还会尽力返回服务可读取的电量 `battery_level` 和描述名称
 `description_name`；读取失败时电量字段不设置、描述名称为空，不影响设备列表响应。
+
+`service_issue` 是可恢复异常通道，不会结束命名管道连接。事件携带稳定的 `code`、设备实例、
+原生错误码、时间戳和 `recoverable` 标志；当前代码包括 `bluetooth_initialization_failed`、
+`bluetooth_runtime_failed`、`hid_filter_driver_error`、`virtual_microphone_unavailable`、
+`virtual_microphone_write_failed`、`virtual_microphone_reset_failed`、
+`memory_allocation_failed` 和 `rpc_event_publish_failed`。设备协调、蓝牙语音线程、HID 读取线程
+和虚拟麦克风写入失败时，各自隔离当前设备/会话，协调线程继续运行并在下一轮重试；桌面端将该事件
+显示为可关闭的非阻塞提示。
 
 每个 RPC 客户端都有独立的出站发送线程；请求响应和事件先进入有界队列，再由该线程
 按顺序写入管道。单次写入超过 2 秒会被取消，队列超过 256 帧或 4 MiB 也会主动断开

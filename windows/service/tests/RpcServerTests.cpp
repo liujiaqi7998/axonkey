@@ -90,7 +90,18 @@ bool ExercisePipe(HANDLE pipe, axonkey_service::RpcServer& server, const std::st
             acknowledgement.requestId != 7 || !acknowledgement.success) return false;
     server.PublishKeyboard("rc003", {0x01, 0x02});
     axonkey::rpc::EventEnvelope event;
-    return ReadFrame(pipe, frame) && axonkey::rpc::Parse(frame, event) && event.type == "keyboard";
+    if (!ReadFrame(pipe, frame) || !axonkey::rpc::Parse(frame, event) || event.type != "keyboard") return false;
+
+    if (!WriteFrame(pipe, axonkey::rpc::Serialize(axonkey::rpc::Request{
+            8, "Subscribe", axonkey::rpc::Serialize(axonkey::rpc::Subscribe{false, false, false, true})})))
+        return false;
+    if (!ReadFrame(pipe, frame) || !axonkey::rpc::Parse(frame, acknowledgement) ||
+            acknowledgement.requestId != 8 || !acknowledgement.success) return false;
+    server.PublishServiceIssue({"hid_filter_driver_error", "driver unavailable", "HID\\RC003", 2, true, 99});
+    if (!ReadFrame(pipe, frame) || !axonkey::rpc::Parse(frame, event) || event.type != "service_issue") return false;
+    axonkey::rpc::ServiceIssue issue;
+    return axonkey::rpc::Parse(event.payload, issue) && issue.code == "hid_filter_driver_error" &&
+        issue.deviceInstanceId == "HID\\RC003" && issue.nativeError == 2;
 }
 }
 

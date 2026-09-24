@@ -1,6 +1,7 @@
 import { useReleaseUpdate } from '../hooks/useReleaseUpdate'
 // @refresh reset
 import {
+  AlertTriangle,
   Check,
   Copy,
   Download,
@@ -91,7 +92,7 @@ import {
 } from '../setupModel'
 import type { DriverActionKind, DriverKind, SetupState, SetupStepId } from '../setupModel'
 import { windowsDeviceDisplayName } from '../windowsService'
-import type { WindowsDevicesProbe, WindowsServiceAction, WindowsServiceStatus } from '../windowsService'
+import type { WindowsDevicesProbe, WindowsServiceAction, WindowsServiceIssue, WindowsServiceStatus } from '../windowsService'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { save } from '@tauri-apps/plugin-dialog'
@@ -106,6 +107,20 @@ import {
   useRef,
   useState,
 } from 'react'
+
+function windowsServiceIssueText(issue: WindowsServiceIssue): string {
+  switch (issue.code) {
+    case 'bluetooth_initialization_failed': return '蓝牙语音通道初始化失败，按键映射仍可继续使用。请确认 RC003 已配对并保持唤醒。'
+    case 'bluetooth_runtime_failed': return '蓝牙语音通道通讯异常，服务会自动重试；按键映射不受影响。'
+    case 'hid_filter_driver_error': return 'Quarbor HID Filter Driver 通讯异常，服务会自动重试；请检查驱动安装状态。'
+    case 'virtual_microphone_unavailable': return '未检测到 Quarbor VirtualMicrophone 驱动，语音转发暂不可用。'
+    case 'virtual_microphone_write_failed':
+    case 'virtual_microphone_reset_failed': return 'VirtualMicrophone 驱动写入异常，本次语音已停止，服务仍在运行。'
+    case 'memory_allocation_failed': return '服务内存分配失败，已隔离本次设备操作；请稍后重试。'
+    case 'rpc_event_publish_failed': return '服务事件推送失败，RPC 通道仍保持运行。'
+    default: return issue.message || 'Windows 服务发生可恢复异常，服务正在继续运行。'
+  }
+}
 
 function AppController() {
   const nativeRuntime = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -160,6 +175,7 @@ function AppController() {
   const [textInputDraft, setTextInputDraft] = useState<string | null>(null)
   const [batteryLevel, setBatteryLevel] = useState<number | null>(null)
   const [windowsDevices, setWindowsDevices] = useState<WindowsDevicesProbe | null>(null)
+  const [windowsServiceIssue, setWindowsServiceIssue] = useState<WindowsServiceIssue | null>(null)
   const [windowsServiceCommunicationReady, setWindowsServiceCommunicationReady] = useState(() => !nativeRuntime || platform !== 'windows')
   const [previewBatteryLevel, setPreviewBatteryLevel] = useState<number | null>(null)
   const serviceBatteryLevel = platform === 'windows' ? windowsDevices?.device?.batteryLevel ?? null : batteryLevel
@@ -353,6 +369,25 @@ function AppController() {
     }).catch((error) => logError('Failed to detect platform', error))
     return () => { active = false }
   }, [])
+
+  useEffect(() => {
+    if (platform !== 'windows' || !nativeRuntime) return
+    let mounted = true
+    let unlisten: (() => void) | undefined
+    void invoke<WindowsServiceIssue | null>('get_windows_service_issue').then((issue) => {
+      if (mounted && issue) setWindowsServiceIssue(issue)
+    }).catch((error) => logError('Failed to read Windows service issue', error))
+    void listen<WindowsServiceIssue>('windows-service-issue', (event) => {
+      if (mounted) setWindowsServiceIssue(event.payload)
+    }).then((cleanup) => {
+      if (mounted) unlisten = cleanup
+      else cleanup()
+    })
+    return () => {
+      mounted = false
+      unlisten?.()
+    }
+  }, [nativeRuntime, platform])
 
   useEffect(() => {
     document.documentElement.classList.toggle('macos-vibrancy', nativeRuntime && platform === 'macos')
@@ -1503,6 +1538,14 @@ function AppController() {
           onToggleEnabled={toggleEnabled}
         />
       <main ref={mainContentRef} key={activePage} className="main-content">
+        {platform === 'windows' && windowsServiceIssue && <section className="windows-service-issue" role="alert" aria-live="assertive">
+          <AlertTriangle size={18} aria-hidden="true" />
+          <div className="windows-service-issue-copy">
+            <strong>AxonkeyService 可恢复异常</strong>
+            <p>{windowsServiceIssueText(windowsServiceIssue)}{windowsServiceIssue.deviceInstanceId ? `（设备：${windowsServiceIssue.deviceInstanceId}）` : ''}</p>
+          </div>
+          <button type="button" className="windows-service-issue-close" aria-label="关闭服务异常提示" title="关闭提示" onClick={() => setWindowsServiceIssue(null)}><X size={15} /></button>
+        </section>}
         {!enabled && !setupOpen && <section className="mapping-disabled-notice" aria-labelledby="mapping-disabled-title">
           <Info size={20} aria-hidden="true" />
           <div className="mapping-disabled-copy">

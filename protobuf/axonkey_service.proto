@@ -95,11 +95,23 @@ message SubscribeRequest {
   bool keyboard = 1;
   bool audio_level = 2;
   bool voice_status = 3;
+  bool service_issues = 4;
+}
+
+// Recoverable service conditions are delivered out-of-band so a device,
+// driver, or Bluetooth failure does not have to tear down the RPC session.
+message ServiceIssue {
+  string code = 1;
+  string message = 2;
+  string device_instance_id = 3;
+  uint32 native_error = 4;
+  bool recoverable = 5;
+  uint64 timestamp_ms = 6;
 }
 
 // Events use a stable type name and a payload message so the server can add
 // event kinds without changing the pipe framing. The payload is one of the
-// KeyboardEvent, AudioLevel, or VoiceStatus messages above.
+// KeyboardEvent, AudioLevel, VoiceStatus, or ServiceIssue messages above.
 message Event {
   string type = 1;
   bytes payload = 2;

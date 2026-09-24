@@ -33,3 +33,7 @@ axonkey.service.v1.KeyboardEvent.report            type:FT_CALLBACK
 
 axonkey.service.v1.Event.type                      type:FT_CALLBACK
 axonkey.service.v1.Event.payload                   type:FT_CALLBACK
+
+axonkey.service.v1.ServiceIssue.code               type:FT_CALLBACK
+axonkey.service.v1.ServiceIssue.message            type:FT_CALLBACK
+axonkey.service.v1.ServiceIssue.device_instance_id type:FT_CALLBACK

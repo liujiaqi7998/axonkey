@@ -18,6 +18,7 @@ public:
     virtual bool Reset() = 0;
     virtual bool Push(std::span<const std::int16_t> samples) = 0;
     virtual void Stop(bool drain = false) = 0;
+    virtual DWORD LastError() const noexcept { return ERROR_GEN_FAILURE; }
 };
 
 // Isolates OS I/O for tests of the actual ring producer (including backpressure).
@@ -39,6 +40,7 @@ public:
     bool Reset() override;
     bool Push(std::span<const std::int16_t> samples) override;
     void Stop(bool drain = false) override;
+    DWORD LastError() const noexcept override { return lastError_.load(); }
     // Terminal cancellation: prevents new opens and interrupts waits before join.
     void Cancel() noexcept { cancelled_.store(true); }
 
@@ -47,8 +49,10 @@ private:
         void* output = nullptr, DWORD outputBytes = 0, DWORD* returned = nullptr);
     bool Query(QUARBOR_MIC_STATE& state);
     void CloseLocked();
+    void SetError(DWORD error) noexcept { lastError_.store(error ? error : ERROR_GEN_FAILURE); }
     std::unique_ptr<MicrophoneTransport> transport_;
     std::atomic_bool cancelled_{false};
+    std::atomic<DWORD> lastError_{ERROR_SUCCESS};
     std::mutex mutex_;
     std::uint8_t* ring_ = nullptr;
     ULONG bufferBytes_ = 0;

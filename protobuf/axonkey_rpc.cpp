@@ -168,6 +168,7 @@ bool Parse(const Bytes& bytes, Subscribe& value) {
     value.keyboard = msg.keyboard;
     value.audioLevel = msg.audio_level;
     value.voiceStatus = msg.voice_status;
+    value.serviceIssues = msg.service_issues;
     return true;
 }
 
@@ -231,13 +232,14 @@ bool Parse(const Bytes& bytes, EventEnvelope& value) {
 bool Parse(const Bytes& bytes, ServiceInfo& value) {
     value = {};
     axonkey_service_v1_ServiceInfo msg = axonkey_service_v1_ServiceInfo_init_zero;
-    return DecodeMessage(bytes, axonkey_service_v1_ServiceInfo_fields, msg, [&](auto& m) {
+    if (!DecodeMessage(bytes, axonkey_service_v1_ServiceInfo_fields, msg, [&](auto& m) {
         BindString(m.name, value.name);
         BindString(m.version, value.version);
         BindString(m.protocol_version, value.protocolVersion);
         BindString(m.pipe_name, value.pipeName);
-        value.audioGainDb = m.audio_gain_db;
-    });
+    })) return false;
+    value.audioGainDb = msg.audio_gain_db;
+    return true;
 }
 
 bool Parse(const Bytes& bytes, ServiceStatus& value) {
@@ -267,6 +269,20 @@ bool Parse(const Bytes& bytes, SetServiceEnable& value) {
         bytes.empty() ? nullptr : bytes.data(), bytes.size());
     if (!pb_decode(&stream, axonkey_service_v1_SetServiceEnableRequest_fields, &msg)) return false;
     value.enabled = msg.enabled;
+    return true;
+}
+
+bool Parse(const Bytes& bytes, ServiceIssue& value) {
+    value = {};
+    axonkey_service_v1_ServiceIssue msg = axonkey_service_v1_ServiceIssue_init_zero;
+    if (!DecodeMessage(bytes, axonkey_service_v1_ServiceIssue_fields, msg, [&](auto& m) {
+            BindString(m.code, value.code);
+            BindString(m.message, value.message);
+            BindString(m.device_instance_id, value.deviceInstanceId);
+        })) return false;
+    value.nativeError = msg.native_error;
+    value.recoverable = msg.recoverable;
+    value.timestampMs = msg.timestamp_ms;
     return true;
 }
 
@@ -411,6 +427,18 @@ Bytes Serialize(const KeyboardEvent& value) {
     });
 }
 
+Bytes Serialize(const ServiceIssue& value) {
+    axonkey_service_v1_ServiceIssue msg = axonkey_service_v1_ServiceIssue_init_zero;
+    msg.native_error = value.nativeError;
+    msg.recoverable = value.recoverable;
+    msg.timestamp_ms = value.timestampMs;
+    return EncodeMessage(axonkey_service_v1_ServiceIssue_fields, msg, [&](auto& m) {
+        BindStringEncode(m.code, value.code);
+        BindStringEncode(m.message, value.message);
+        BindStringEncode(m.device_instance_id, value.deviceInstanceId);
+    });
+}
+
 Bytes Serialize(const SetAudioGain& value) {
     axonkey_service_v1_SetAudioGainRequest msg = axonkey_service_v1_SetAudioGainRequest_init_zero;
     msg.gain_db = value.gainDb;
@@ -428,6 +456,7 @@ Bytes Serialize(const Subscribe& value) {
     msg.keyboard = value.keyboard;
     msg.audio_level = value.audioLevel;
     msg.voice_status = value.voiceStatus;
+    msg.service_issues = value.serviceIssues;
     size_t size = 0;
     if (!pb_get_encoded_size(&size, axonkey_service_v1_SubscribeRequest_fields, &msg)) return {};
     Bytes out(size);

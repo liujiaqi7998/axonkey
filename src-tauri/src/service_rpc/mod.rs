@@ -16,6 +16,7 @@ use tokio::{
     net::windows::named_pipe::ClientOptions,
     sync::{broadcast, watch},
 };
+use tauri::Emitter;
 
 use crate::audio_service::{AudioLevel, AudioServiceStatus};
 
@@ -131,6 +132,17 @@ pub struct ServiceRpcDevice {
     pub description_name: String,
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceIssue {
+    pub code: String,
+    pub message: String,
+    pub device_instance_id: String,
+    pub native_error: u32,
+    pub recoverable: bool,
+    pub timestamp_ms: u64,
+}
+
 pub enum GetDevicesError {
     ServiceUnavailable(io::Error),
     Request(io::Error),
@@ -150,11 +162,12 @@ pub struct ServiceConnection {
     state: watch::Receiver<ConnectionState>,
     audio_level: watch::Receiver<Option<proto::AudioLevel>>,
     voice_status: watch::Receiver<Option<proto::VoiceStatus>>,
+    issue: watch::Receiver<Option<proto::ServiceIssue>>,
     task: tauri::async_runtime::JoinHandle<()>,
 }
 
 impl ServiceConnection {
-    pub fn start() -> Self {
+    pub fn start(app: tauri::AppHandle) -> Self {
         // Initialize the keyboard broadcaster before spawning the listener so
         // a report cannot be dropped solely because startup is concurrent
         // with the input worker's receiver registration.
@@ -163,11 +176,13 @@ impl ServiceConnection {
         let (sender, state) = watch::channel(ConnectionState::Disconnected { error: None });
         let (audio_sender, audio_level) = watch::channel(None);
         let (voice_sender, voice_status) = watch::channel(None);
-        let task = tauri::async_runtime::spawn(run(sender, audio_sender, voice_sender));
+        let (issue_sender, issue) = watch::channel(None);
+        let task = tauri::async_runtime::spawn(run(app, sender, audio_sender, voice_sender, issue_sender));
         Self {
             state,
             audio_level,
             voice_status,
+            issue,
             task,
         }
     }
@@ -263,6 +278,17 @@ impl ServiceConnection {
                 },
             ))
         }
+    }
+
+    pub fn latest_issue(&self) -> Option<ServiceIssue> {
+        self.issue.borrow().as_ref().map(|value| ServiceIssue {
+            code: value.code.clone(),
+            message: value.message.clone(),
+            device_instance_id: value.device_instance_id.clone(),
+            native_error: value.native_error,
+            recoverable: value.recoverable,
+            timestamp_ms: value.timestamp_ms,
+        })
     }
 
     pub async fn set_service_enable(&self, enabled: bool) -> io::Result<()> {
@@ -399,13 +425,15 @@ impl Drop for ServiceConnection {
 }
 
 async fn run(
+    app: tauri::AppHandle,
     state: watch::Sender<ConnectionState>,
     audio_sender: watch::Sender<Option<proto::AudioLevel>>,
     voice_sender: watch::Sender<Option<proto::VoiceStatus>>,
+    issue_sender: watch::Sender<Option<proto::ServiceIssue>>,
 ) {
     let mut last_error = None;
     loop {
-        let result = connect_and_monitor(&state, &audio_sender, &voice_sender).await;
+        let result = connect_and_monitor(&app, &state, &audio_sender, &voice_sender, &issue_sender).await;
         set_keyboard_connection_active(false);
         if matches!(*state.borrow(), ConnectionState::Connected(_)) {
             last_error = None;
@@ -426,9 +454,11 @@ async fn run(
 }
 
 async fn connect_and_monitor(
+    app: &tauri::AppHandle,
     state: &watch::Sender<ConnectionState>,
     audio_sender: &watch::Sender<Option<proto::AudioLevel>>,
     voice_sender: &watch::Sender<Option<proto::VoiceStatus>>,
+    issue_sender: &watch::Sender<Option<proto::ServiceIssue>>,
 ) -> io::Result<()> {
     let mut pipe = ClientOptions::new().open(PIPE_NAME)?;
     let info = tokio::time::timeout(PROBE_TIMEOUT, request_service_info(&mut pipe))
@@ -465,7 +495,7 @@ async fn connect_and_monitor(
     loop {
         let frame = read_frame(&mut pipe).await?;
         let event = proto::Event::decode(frame.as_slice()).map_err(invalid_data)?;
-        handle_event(event, audio_sender, voice_sender)?;
+        handle_event_with_issue(event, audio_sender, voice_sender, issue_sender, Some(app))?;
     }
 }
 
@@ -474,13 +504,26 @@ fn event_subscription() -> proto::SubscribeRequest {
         keyboard: true,
         audio_level: true,
         voice_status: true,
+        service_issues: true,
     }
 }
 
+#[cfg(test)]
 fn handle_event(
     event: proto::Event,
     audio_sender: &watch::Sender<Option<proto::AudioLevel>>,
     voice_sender: &watch::Sender<Option<proto::VoiceStatus>>,
+) -> io::Result<()> {
+    let (issue_sender, _) = watch::channel::<Option<proto::ServiceIssue>>(None);
+    handle_event_with_issue(event, audio_sender, voice_sender, &issue_sender, None)
+}
+
+fn handle_event_with_issue(
+    event: proto::Event,
+    audio_sender: &watch::Sender<Option<proto::AudioLevel>>,
+    voice_sender: &watch::Sender<Option<proto::VoiceStatus>>,
+    issue_sender: &watch::Sender<Option<proto::ServiceIssue>>,
+    app: Option<&tauri::AppHandle>,
 ) -> io::Result<()> {
     match event.r#type.as_str() {
         "keyboard" => {
@@ -508,6 +551,23 @@ fn handle_event(
                 audio_sender.send_replace(None);
             }
             voice_sender.send_replace(Some(status));
+        }
+        "service_issue" => {
+            let issue = proto::ServiceIssue::decode(event.payload.as_slice()).map_err(invalid_data)?;
+            issue_sender.send_replace(Some(issue.clone()));
+            let payload = ServiceIssue {
+                code: issue.code,
+                message: issue.message,
+                device_instance_id: issue.device_instance_id,
+                native_error: issue.native_error,
+                recoverable: issue.recoverable,
+                timestamp_ms: issue.timestamp_ms,
+            };
+            if let Some(app) = app {
+                if let Err(error) = app.emit("windows-service-issue", payload) {
+                    log::debug!(target: "axonkey::service_rpc", "Could not emit Windows service issue: {error}");
+                }
+            }
         }
         _ => {
             log::debug!(target: "axonkey::service_rpc", "Ignoring AxonkeyService event {}", event.r#type)

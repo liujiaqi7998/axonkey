@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <new>
 
 namespace axonkey_service {
 namespace {
@@ -93,26 +94,36 @@ struct RpcServer::Client {
     }
 
     bool Enqueue(Bytes frame) {
-        if (frame.size() > kMaxFrame) return false;
-        bool overLimit = false;
-        {
-            std::lock_guard lock(queueMutex);
-            if (closed.load()) return false;
-            overLimit = outbound.size() >= kMaxQueuedFrames ||
-                queuedBytes > kMaxQueuedBytes - frame.size();
-            if (!overLimit) {
-                queuedBytes += frame.size();
-                outbound.push_back(std::move(frame));
+        try {
+            if (frame.size() > kMaxFrame) return false;
+            bool overLimit = false;
+            {
+                std::lock_guard lock(queueMutex);
+                if (closed.load()) return false;
+                overLimit = outbound.size() >= kMaxQueuedFrames ||
+                    queuedBytes > kMaxQueuedBytes - frame.size();
+                if (!overLimit) {
+                    queuedBytes += frame.size();
+                    outbound.push_back(std::move(frame));
+                }
             }
-        }
-        if (overLimit) {
-            LogMessage(L"Axonkey RPC client outbound queue limit reached; disconnecting",
-                LogLevel::Warning);
+            if (overLimit) {
+                LogMessage(L"Axonkey RPC client outbound queue limit reached; disconnecting",
+                    LogLevel::Warning);
+                Close();
+                return false;
+            }
+            queueCv.notify_one();
+            return true;
+        } catch (const std::bad_alloc&) {
+            LogMessage(L"Axonkey RPC client outbound allocation failed; disconnecting", LogLevel::Warning);
+            Close();
+            return false;
+        } catch (...) {
+            LogMessage(L"Axonkey RPC client enqueue failed; disconnecting", LogLevel::Warning);
             Close();
             return false;
         }
-        queueCv.notify_one();
-        return true;
     }
 
     void Close() {
@@ -217,7 +228,7 @@ private:
 public:
     HANDLE pipe = INVALID_HANDLE_VALUE;
     std::atomic_bool closed = false;
-    std::atomic_bool keyboard = false, audioLevel = false, voiceStatus = false;
+    std::atomic_bool keyboard = false, audioLevel = false, voiceStatus = false, serviceIssues = false;
 
 private:
     std::mutex queueMutex;
@@ -241,7 +252,7 @@ HANDLE RpcServer::CreatePipe() const {
     PSECURITY_DESCRIPTOR descriptor = nullptr;
     SECURITY_ATTRIBUTES attributes{sizeof(attributes), nullptr, FALSE};
     if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;AU)", SDDL_REVISION_1,
+            L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;AU)(A;;GA;;;IU)(A;;GA;;;WD)", SDDL_REVISION_1,
             &descriptor, nullptr)) attributes.lpSecurityDescriptor = descriptor;
     auto pipe = CreateNamedPipeW(pipeName_.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES,
@@ -271,7 +282,15 @@ bool RpcServer::Start() {
         return false;
     }
     CloseHandle(initialPipe);
-    acceptThread_ = std::thread(&RpcServer::AcceptLoop, this);
+    try {
+        acceptThread_ = std::thread(&RpcServer::AcceptLoop, this);
+    } catch (...) {
+        CloseHandle(stopEvent_);
+        stopEvent_ = nullptr;
+        stopping_.store(true);
+        LogMessage(L"Starting Axonkey RPC accept thread failed", LogLevel::Error);
+        return false;
+    }
     LogMessage(L"Axonkey protobuf RPC endpoint started: " + pipeName_);
     return true;
 }
@@ -300,7 +319,17 @@ void RpcServer::Stop() {
     stopEvent_ = nullptr;
 }
 
-void RpcServer::AcceptLoop() {
+void RpcServer::AcceptLoop() noexcept {
+    try {
+        AcceptLoopImpl();
+    } catch (const std::bad_alloc&) {
+        LogMessage(L"Axonkey RPC accept loop ran out of memory; stopping accepts", LogLevel::Error);
+    } catch (...) {
+        LogMessage(L"Axonkey RPC accept loop stopped after an unknown exception", LogLevel::Error);
+    }
+}
+
+void RpcServer::AcceptLoopImpl() {
     auto pipe = CreatePipe();
     while (!stopping_.load()) {
         if (pipe == INVALID_HANDLE_VALUE) {
@@ -379,7 +408,20 @@ void RpcServer::RemoveClient(const std::shared_ptr<Client>& client) {
     client->Close();
 }
 
-void RpcServer::ClientLoop(const std::shared_ptr<Client>& client) {
+void RpcServer::ClientLoop(const std::shared_ptr<Client>& client) noexcept {
+    try {
+        ClientLoopImpl(client);
+    } catch (const std::bad_alloc&) {
+        LogMessage(L"Axonkey RPC client loop ran out of memory; disconnecting", LogLevel::Warning);
+    } catch (...) {
+        LogMessage(L"Axonkey RPC client loop stopped after an unknown exception", LogLevel::Warning);
+    }
+    RemoveClient(client);
+    client->JoinWorkers();
+    client->ClosePipeHandles();
+}
+
+void RpcServer::ClientLoopImpl(const std::shared_ptr<Client>& client) {
     Bytes frame;
     while (!stopping_.load() && !client->closed.load() && ReadFrame(client->pipe, frame)) {
         axonkey::rpc::Request request;
@@ -390,6 +432,8 @@ void RpcServer::ClientLoop(const std::shared_ptr<Client>& client) {
         bool subscribeKeyboard = false;
         bool subscribeAudioLevel = false;
         bool subscribeVoiceStatus = false;
+        bool subscribeServiceIssues = false;
+        try {
         if (request.method == "GetServiceInfo") {
             response.success = true; response.payload = axonkey::rpc::Serialize(handlers_.serviceInfo());
         } else if (request.method == "GetServiceStatus") {
@@ -434,40 +478,59 @@ void RpcServer::ClientLoop(const std::shared_ptr<Client>& client) {
                 subscribeKeyboard = subscription.keyboard;
                 subscribeAudioLevel = subscription.audioLevel;
                 subscribeVoiceStatus = subscription.voiceStatus;
+                subscribeServiceIssues = subscription.serviceIssues;
                 response.payload = axonkey::rpc::Serialize(axonkey::rpc::OperationResult{true, {}});
             }
             else response.error = "invalid Subscribe protobuf payload";
         } else { response.error = "unknown Axonkey RPC method"; }
+        } catch (const std::exception& error) {
+            response.success = false;
+            response.error = std::string("request handler failed: ") + error.what();
+            LogMessage(response.error, LogLevel::Error);
+        } catch (...) {
+            response.success = false;
+            response.error = "request handler failed with an unknown exception";
+            LogMessage(L"Axonkey RPC request handler failed with an unknown exception", LogLevel::Error);
+        }
         if (!response.success && response.error.empty()) response.error = "request failed";
         if (!client->Enqueue(axonkey::rpc::Serialize(response))) break;
         if (updateSubscription) {
             client->keyboard = subscribeKeyboard;
             client->audioLevel = subscribeAudioLevel;
             client->voiceStatus = subscribeVoiceStatus;
+            client->serviceIssues = subscribeServiceIssues;
         }
     }
-    RemoveClient(client);
-    client->JoinWorkers();
-    client->ClosePipeHandles();
 }
 
 void RpcServer::Publish(const axonkey::rpc::EventEnvelope& event, int kind) {
-    const auto bytes = axonkey::rpc::Serialize(event);
-    std::vector<std::shared_ptr<Client>> targets;
-    {
-        std::lock_guard lock(clientsMutex_);
-        for (const auto& client : clients_) {
-            if ((kind == 1 && !client->keyboard) ||
-                    (kind == 2 && !client->audioLevel) ||
-                    (kind == 3 && !client->voiceStatus)) continue;
-            targets.push_back(client);
+    try {
+        const auto bytes = axonkey::rpc::Serialize(event);
+        if (bytes.empty() && !event.payload.empty()) {
+            LogMessage(L"Axonkey RPC event serialization failed; dropping event", LogLevel::Warning);
+            return;
         }
-    }
-    for (const auto& client : targets) {
-        // Enqueue is bounded and never performs pipe I/O. A slow or stuck
-        // client is disconnected by the client worker without blocking the
-        // service thread that produced this event.
-        client->Enqueue(bytes);
+        std::vector<std::shared_ptr<Client>> targets;
+        {
+            std::lock_guard lock(clientsMutex_);
+            for (const auto& client : clients_) {
+                if ((kind == 1 && !client->keyboard) ||
+                        (kind == 2 && !client->audioLevel) ||
+                        (kind == 3 && !client->voiceStatus) ||
+                        (kind == 4 && !client->serviceIssues)) continue;
+                targets.push_back(client);
+            }
+        }
+        for (const auto& client : targets) {
+            // Enqueue is bounded and never performs pipe I/O. A slow or stuck
+            // client is disconnected by the client worker without blocking the
+            // service thread that produced this event.
+            client->Enqueue(bytes);
+        }
+    } catch (const std::bad_alloc&) {
+        LogMessage(L"Axonkey RPC event allocation failed; dropping event", LogLevel::Warning);
+    } catch (...) {
+        LogMessage(L"Axonkey RPC event publication failed; dropping event", LogLevel::Warning);
     }
 }
 
@@ -477,5 +540,14 @@ void RpcServer::PublishKeyboard(const std::string& device, const std::vector<std
 }
 void RpcServer::PublishAudioLevel(const axonkey::rpc::AudioLevel& level) { Publish({"audio_level", axonkey::rpc::Serialize(level)}, 2); }
 void RpcServer::PublishVoiceStatus(const axonkey::rpc::VoiceStatus& status) { Publish({"voice_status", axonkey::rpc::Serialize(status)}, 3); }
+void RpcServer::PublishServiceIssue(const axonkey::rpc::ServiceIssue& issue) {
+    auto payload = axonkey::rpc::Serialize(issue);
+    if (payload.empty() && (!issue.code.empty() || !issue.message.empty() ||
+        !issue.deviceInstanceId.empty())) {
+        LogMessage(L"Axonkey RPC service issue serialization failed; dropping issue", LogLevel::Warning);
+        return;
+    }
+    Publish({"service_issue", std::move(payload)}, 4);
+}
 
 } // namespace axonkey_service

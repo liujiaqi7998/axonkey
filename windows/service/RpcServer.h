@@ -39,11 +39,14 @@ public:
     void PublishKeyboard(const std::string& deviceInstanceId, const std::vector<std::uint8_t>& report);
     void PublishAudioLevel(const axonkey::rpc::AudioLevel& level);
     void PublishVoiceStatus(const axonkey::rpc::VoiceStatus& status);
+    void PublishServiceIssue(const axonkey::rpc::ServiceIssue& issue);
 
 private:
     struct Client;
-    void AcceptLoop();
-    void ClientLoop(const std::shared_ptr<Client>& client);
+    void AcceptLoop() noexcept;
+    void AcceptLoopImpl();
+    void ClientLoop(const std::shared_ptr<Client>& client) noexcept;
+    void ClientLoopImpl(const std::shared_ptr<Client>& client);
     void RemoveClient(const std::shared_ptr<Client>& client);
     void Publish(const axonkey::rpc::EventEnvelope& event, int kind);
     HANDLE CreatePipe() const;

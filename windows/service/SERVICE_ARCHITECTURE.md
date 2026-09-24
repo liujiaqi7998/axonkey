@@ -232,13 +232,15 @@ RPC 端点固定为 `\\.\pipe\AxonkeyService.v1`，定义在 [`RpcServer.h:30`](
 ```
 
 - `ReadFrame()` / `WriteFrame()`：[`RpcServer.cpp:53`](RpcServer.cpp#L53)，最大帧 1 MiB。
-- `CreatePipe()`：[`RpcServer.cpp:240`](RpcServer.cpp#L240)，创建无限实例、字节流模式且启用 `FILE_FLAG_OVERLAPPED` 的双向管道；ACL 允许 SYSTEM、管理员和已认证用户。同一客户端的请求读取与响应/事件写入可并行进行，不会因同步句柄串行化而互相阻塞。
+- `CreatePipe()`：[`RpcServer.cpp:240`](RpcServer.cpp#L240)，创建无限实例、字节流模式且启用 `FILE_FLAG_OVERLAPPED` 的双向管道；ACL 允许 SYSTEM、管理员和本机桌面客户端访问。同一客户端的请求读取与响应/事件写入可并行进行，不会因同步句柄串行化而互相阻塞。
 - `Start()`：[`RpcServer.cpp:259`](RpcServer.cpp#L259)，先同步验证第一个管道实例，再启动 accept 线程。
 - `AcceptLoop()`：[`RpcServer.cpp:303`](RpcServer.cpp#L303)，用重叠 `ConnectNamedPipe` 等待连接或停止事件；接受后先创建下一个监听实例，再为当前客户端创建线程，减少客户端看到 `ERROR_PIPE_BUSY` 的窗口。
 - `ClientLoop()`：解析请求并调用 `RpcHandlers`；响应只进入该客户端的出站队列，不在请求线程中同步写 Pipe。
 - `Client::SenderLoop()`：每个连接独立的发送线程，按入队顺序用重叠 I/O 写入响应和事件，保证 `Subscribe` 响应先于首个事件。每次读写都等待自身的 `OVERLAPPED` 完成后才释放事件与缓冲区。
 - `Client::WatchdogLoop()`：监视当前写入，超过 2 秒调用 `CancelIoEx`，随后断开无响应客户端。
 - `Publish()`：只复制订阅客户端快照并入队，不持有全局客户端锁执行 I/O；单客户端队列最多 256 帧或 4 MiB，超过即断开慢客户端。
+- `PublishServiceIssue()`：将设备、驱动、蓝牙、虚拟麦克风和内存异常编码成 `service_issue` 事件；
+  序列化或单客户端入队失败只丢弃该事件/断开异常客户端，不穿透到设备工作线程。
 
 `Service::Run()` 在 [`main.cpp:216`](main.cpp#L216) 把 RPC handler 绑定到服务状态：
 
@@ -295,10 +297,12 @@ RPC 端点固定为 `\\.\pipe\AxonkeyService.v1`，定义在 [`RpcServer.h:30`](
 | `VoiceReceiver::Run()` | GATT 初始化、事件消费、协议处理、清理 | WinRT apartment 只在该线程初始化/反初始化 |
 | RPC accept/client 线程 | 接受连接、读取请求和调用 handler | 响应只入有界出站队列；不在请求线程或全局客户端锁中执行 Pipe 写入 |
 | RPC client sender/watchdog 线程 | 串行发送响应/事件、取消超时写入 | 单次写入超过 2 秒或队列超过 256 帧/4 MiB 即断开客户端 |
-| 虚拟麦克风 `Push()` | 查询状态、回绕拷贝、提交数据 | 250 ms 无空闲空间即失败，停止时支持取消 |
+| 虚拟麦克风 `Push()` | 查询状态、回绕拷贝、提交数据 | 250 ms 无空闲空间即失败；环形内存拷贝使用 SEH 隔离访问异常，停止时支持取消 |
 
 主要的“失败后自愈”策略是：`Worker()` 每 2 秒重试 `Reconcile()`；失败的 HID reader 会将
 `valid_` 置为 false，下一轮协调会析构并重建；GATT/语音线程失败后标记完成，下一轮也会重建。
+所有这些边界都先记录日志，再通过 `service_issue` 推送到桌面端；请求处理、事件发布和每个 RPC
+客户端的发送线程都有异常边界，单个客户端或单个设备不会拖垮 `RpcServer`。
 
 ## 9. 按问题定位函数
 

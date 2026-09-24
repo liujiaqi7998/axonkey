@@ -20,7 +20,11 @@ bool VoiceAudioSession::PushSamples(std::vector<std::int16_t> samples) {
         }
         level_(peak, static_cast<float>(std::sqrt(sum / samples.size())));
     }
-    return microphone_.Push(samples);
+    if (!microphone_.Push(samples)) {
+        if (failure_) failure_("virtual_microphone_write_failed", microphone_.LastError());
+        return false;
+    }
+    return true;
 }
 
 bool VoiceAudioSession::Open() {
@@ -30,6 +34,7 @@ bool VoiceAudioSession::Open() {
         // Never retry on every AUDIO notification: a second remote must not
         // take over halfway through its utterance when the first owner stops.
         rejected_ = true;
+        if (failure_) failure_("virtual_microphone_unavailable", microphone_.LastError());
         LogMessage(L"RC003 voice session rejected: virtual microphone unavailable; discard until next voice session", LogLevel::Warning);
         return false;
     }
@@ -93,7 +98,10 @@ void VoiceAudioSession::Control(const std::vector<std::uint8_t>& bytes) {
         sessionId_ = bytes.size() >= 4 ? bytes[3] : 0;
         decoder_.Reset();
         if (microphoneOpen_) {
-            if (!microphone_.Reset()) Fail();
+            if (!microphone_.Reset()) {
+                if (failure_) failure_("virtual_microphone_reset_failed", microphone_.LastError());
+                Fail();
+            }
         } else Open();
         break;
     case 0x0a:

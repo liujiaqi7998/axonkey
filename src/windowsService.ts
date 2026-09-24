@@ -41,6 +41,15 @@ export type WindowsDevicesProbe = {
   error: string | null
 }
 
+export type WindowsServiceIssue = {
+  code: string
+  message: string
+  deviceInstanceId: string
+  nativeError: number
+  recoverable: boolean
+  timestampMs: number
+}
+
 /**
  * Formats the device row in the mapping status card.
  *

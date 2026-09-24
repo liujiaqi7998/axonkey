@@ -13,9 +13,12 @@ class VoiceAudioSession final {
 public:
     using SendCommand = std::function<void(const std::vector<std::uint8_t>&)>;
     using LevelCallback = std::function<void(float, float)>;
+    using FailureCallback = std::function<void(const char*, DWORD)>;
     VoiceAudioSession(MicrophoneOutput& microphone, SendCommand send,
-        std::int32_t audioGainDb = kDefaultAudioGainDb, LevelCallback level = {})
-        : microphone_(microphone), send_(std::move(send)), level_(std::move(level)), gain_(audioGainDb) {}
+        std::int32_t audioGainDb = kDefaultAudioGainDb, LevelCallback level = {},
+        FailureCallback failure = {})
+        : microphone_(microphone), send_(std::move(send)), level_(std::move(level)),
+          failure_(std::move(failure)), gain_(audioGainDb) {}
     void Control(const std::vector<std::uint8_t>& bytes);
     void Audio(const std::vector<std::uint8_t>& bytes);
     void CloseRemote();
@@ -33,6 +36,7 @@ private:
     MicrophoneOutput& microphone_;
     SendCommand send_;
     LevelCallback level_;
+    FailureCallback failure_;
     AdpcmDecoder decoder_;
     AudioGain gain_;
     bool capabilities_ = false;
