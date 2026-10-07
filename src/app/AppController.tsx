@@ -324,7 +324,7 @@ function AppController() {
     window.addEventListener('keydown', handleEscapeFailsafe, true)
     return () => window.removeEventListener('keydown', handleEscapeFailsafe, true)
   }, [mouseEnabled])
-  const { audioGain, gainError, audioGainReady, updateAudioGain } = useAudioControls({
+  const { audioGain, gainError, audioGainReady, updateAudioGain, audioRestarting, audioRestartError, restartAudio } = useAudioControls({
     platform,
     nativeRuntime,
     onToast: setToast,
@@ -733,7 +733,10 @@ function AppController() {
   const beginBehaviorDraft = (type: AdvancedBehaviorType, mode: DraftBehaviorState['mode']) => {
     const behavior = type === 'key'
       ? { ...createBehavior({ type: 'shortcut' }), keys: [] }
-      : createBehavior(type === 'paste' ? { type, text: '' } : { type, ms: 300 })
+      : createBehavior(type === 'paste' ? { type, text: '' }
+        : type === 'openApp' ? { type, path: '' }
+        : type === 'openWebsite' ? { type, url: '' }
+        : { type, ms: 300 })
     setEditingBehaviorId(null)
     setDraftBehavior({ behavior, mode })
     setCapturingBehaviorId(type === 'key' ? behavior.id : null)
@@ -792,8 +795,15 @@ function AppController() {
       case 'volumeDown': return replaceWithKey('VolumeDown')
       case 'volumeMute': return replaceWithKey('VolumeMute')
       case 'mediaPlayPause': return replaceWithKey('MediaPlayPause')
+      case 'mediaPrevious': return replaceWithKey('MediaPrevious')
+      case 'mediaNext': return replaceWithKey('MediaNext')
+      case 'mediaStop': return replaceWithKey('MediaStop')
       case 'customKey':
         beginBehaviorDraft('key', 'replace')
+        return
+      case 'openApp':
+      case 'openWebsite':
+        beginBehaviorDraft(preset, 'replace')
         return
       case 'textAndEnter':
         setTextInputDraft(textAndEnterValue(behaviors[selectedBehavior.buttonId][selectedBehavior.trigger]) ?? '')
@@ -1668,6 +1678,9 @@ function AppController() {
           onRefresh={() => void probeSystemState(false)}
           audioDriver={setupState.drivers.audio}
           onAudioAction={(action) => void runDriverAction('audio', action)}
+          audioRestarting={audioRestarting}
+          audioRestartError={audioRestartError}
+          onRestartAudio={() => void restartAudio().then(() => probeAudioState())}
           onProbeAudio={() => void probeAudioState()}
           onOpenSound={() => void openSystemSettings('sound')}
           device={setupState.device}

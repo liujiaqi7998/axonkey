@@ -1298,6 +1298,22 @@ fn probe_audio_state(
 }
 
 #[tauri::command]
+async fn restart_audio_service(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::Manager;
+        tauri::async_runtime::spawn_blocking(move || app.state::<AudioService>().restart())
+            .await
+            .map_err(|error| format!("音频重启失败：{error}"))?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("手动重启虚拟麦克风仅支持 macOS".into())
+    }
+}
+
+#[tauri::command]
 fn get_audio_test_state(
     app: tauri::AppHandle,
     audio_service: tauri::State<'_, AudioService>,
@@ -1576,6 +1592,7 @@ pub fn run() {
             probe_system_state,
             probe_audio_available,
             probe_audio_state,
+            restart_audio_service,
             get_audio_test_state,
             get_audio_gain,
             set_audio_gain,

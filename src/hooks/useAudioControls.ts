@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   audioGainMax,
   audioGainMin,
@@ -26,6 +26,28 @@ export function useAudioControls({ platform, nativeRuntime, onToast }: UseAudioC
   const [audioGain, setAudioGain] = useState(() => platform === 'macos' ? getStoredAudioGain() : 0)
   const [gainError, setGainError] = useState('')
   const [audioGainReady, setAudioGainReady] = useState(() => platform !== 'windows' || !nativeRuntime)
+  const [audioRestarting, setAudioRestarting] = useState(false)
+  const [audioRestartError, setAudioRestartError] = useState('')
+  const audioRestartRunning = useRef(false)
+
+  const restartAudio = async () => {
+    if (!nativeRuntime || platform !== 'macos' || audioRestartRunning.current) return
+    audioRestartRunning.current = true
+    setAudioRestarting(true)
+    setAudioRestartError('')
+    try {
+      await invoke('restart_audio_service')
+      logInfo('Manually rebuilt macOS audio connections')
+      onToast('已重新连接 MiRemoteV 2ch，遥控器语音通道正在重新连接')
+      window.setTimeout(() => onToast(''), 3200)
+    } catch (error) {
+      logError('Failed to restart macOS audio connections', error)
+      setAudioRestartError(`重启失败：${String(error)}`)
+    } finally {
+      audioRestartRunning.current = false
+      setAudioRestarting(false)
+    }
+  }
 
   useEffect(() => {
     if (platform !== 'macos') return
@@ -94,5 +116,5 @@ export function useAudioControls({ platform, nativeRuntime, onToast }: UseAudioC
     })
   }
 
-  return { audioGain, gainError, audioGainReady, updateAudioGain }
+  return { audioGain, gainError, audioGainReady, updateAudioGain, audioRestarting, audioRestartError, restartAudio }
 }

@@ -732,6 +732,9 @@ fn execute_behaviors(values: &[NativeBehavior]) {
                 send_mouse_move(dx, dy);
             }
             NativeBehavior::Paste { text, .. } => send_unicode_text(text),
+            NativeBehavior::OpenApp { .. } | NativeBehavior::OpenWebsite { .. } => {
+                super::launch::execute(value)
+            }
             NativeBehavior::Delay { ms, .. } => {
                 thread::sleep(Duration::from_millis((*ms).min(300_000)))
             }
@@ -757,6 +760,7 @@ pub(super) fn execute_mouse_behavior(behavior: &NativeBehavior, hold_ms: u64) {
         }
         NativeBehavior::Mouse { button, .. } => send_mouse_click(*button),
         NativeBehavior::Paste { text, .. } => send_unicode_text(text),
+        NativeBehavior::OpenApp { .. } | NativeBehavior::OpenWebsite { .. } => super::launch::execute(behavior),
         NativeBehavior::Key { .. } | NativeBehavior::Shortcut { .. } => {
             if let Some(keys) = behavior_chord(behavior) {
                 if !send_mouse_chord_with(&keys, hold_ms, send_mouse_keyboard_inputs) {
@@ -888,6 +892,8 @@ fn behavior_chord(behavior: &NativeBehavior) -> Option<Vec<u16>> {
         | NativeBehavior::CursorMove { .. }
         | NativeBehavior::Mouse { .. }
         | NativeBehavior::Paste { .. }
+        | NativeBehavior::OpenApp { .. }
+        | NativeBehavior::OpenWebsite { .. }
         | NativeBehavior::Delay { .. }
         | NativeBehavior::Disabled { .. } => None,
     }
@@ -974,7 +980,7 @@ fn is_modifier(vk: u16) -> bool {
 
 fn is_extended_key(key: u16) -> bool {
     matches!(key,
-        0x5e | 0xa3 | 0xa5 | 0x5b | 0x5c | 0x21..=0x28 | 0x2d | 0x2e | 0x5d | 0xa6..=0xaf | 0xb3
+        0x5e | 0xa3 | 0xa5 | 0x5b | 0x5c | 0x21..=0x28 | 0x2d | 0x2e | 0x5d | 0xa6..=0xaf | 0xb0..=0xb3
     )
 }
 
@@ -1033,6 +1039,9 @@ fn virtual_key_for_name(value: &str) -> Option<u16> {
         "VOLUMEDOWN" => 0xae,
         "VOLUMEUP" => 0xaf,
         "MEDIAPLAYPAUSE" => 0xb3,
+        "MEDIANEXT" => 0xb0,
+        "MEDIAPREVIOUS" => 0xb1,
+        "MEDIASTOP" => 0xb2,
         ";" | ":" => 0xba,
         "=" | "+" => 0xbb,
         "," | "，" | "<" => 0xbc,
@@ -1624,6 +1633,28 @@ mod tests {
         assert_eq!(parse_chord("]"), Some(vec![0xdd]));
         assert_eq!(parse_chord("】"), Some(vec![0xdd]));
         assert_eq!(parse_chord("Ctrl+C"), Some(vec![0x11, 0x43]));
+        assert_eq!(parse_chord("MediaNext"), Some(vec![0xb0]));
+        assert_eq!(parse_chord("MediaPrevious"), Some(vec![0xb1]));
+        assert_eq!(parse_chord("MediaStop"), Some(vec![0xb2]));
+    }
+
+    #[test]
+    fn modifier_shortcuts_keep_both_sides() {
+        let triggers: TriggerBehaviors = serde_json::from_value(serde_json::json!({
+            "click": [{ "type": "shortcut", "keys": ["Win", "RWin"] }]
+        }))
+        .unwrap();
+        assert_eq!(continuous_click_chord(&triggers), Some(vec![0x5b, 0x5c]));
+    }
+
+    #[test]
+    fn modifier_shortcuts_preserve_independent_sides() {
+        let triggers: TriggerBehaviors = serde_json::from_value(serde_json::json!({
+            "click": [{ "type": "shortcut", "keys": ["RCtrl", "Shift", "RAlt", "Win"] }]
+        }))
+        .unwrap();
+        let keys = continuous_click_chord(&triggers).unwrap();
+        assert_eq!(keys, vec![0xa3, 0x10, 0xa5, 0x5b]);
     }
 
     #[test]

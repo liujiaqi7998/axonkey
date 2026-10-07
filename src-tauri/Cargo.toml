@@ -1,6 +1,6 @@
 [package]
 name = "axonkey"
-version = "0.3.15"
+version = "0.3.22"
 description = "Axonkey RC003 key mapping editor"
 authors = ["Axonkey"]
 edition = "2021"
@@ -18,7 +18,7 @@ prost-build = "0.13"
 protoc-bin-vendored = "3"
 
 [dependencies]
-tauri = { version = "2.8.3", features = [ "tray-icon"] }
+tauri = { version = "2.8.3", features = ["macos-private-api", "tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2"
