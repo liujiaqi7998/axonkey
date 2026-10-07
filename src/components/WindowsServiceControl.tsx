@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Download, Radio, RotateCcw, Trash2 } from 'lucide-react'
+import { ArrowUpCircle, Download, Radio, RotateCcw, Trash2 } from 'lucide-react'
 import { SettingsHelp } from './SettingsHelp'
 import { serviceStateLabels } from '../windowsService'
 import type { WindowsServiceAction, WindowsServiceStatus } from '../windowsService'
@@ -10,6 +10,20 @@ type WindowsServiceControlProps = {
   onBusyChange: (busy: boolean) => void
   onQuery: () => Promise<WindowsServiceStatus>
   onAction: (action: WindowsServiceAction) => Promise<WindowsServiceStatus>
+}
+
+function formatBuildTime(value: number | null) {
+  if (!value) return '未找到'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '未知'
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(date)
 }
 
 export function WindowsServiceControl({ nativeRuntime, disabled, onBusyChange, onQuery, onAction }: WindowsServiceControlProps) {
@@ -71,7 +85,11 @@ export function WindowsServiceControl({ nativeRuntime, disabled, onBusyChange, o
       const next = await onAction(action)
       if (mounted.current) {
         setStatus(next)
-        setMessage(action === 'install' ? '服务已安装并启动，已设为开机自动启动。' : '服务已停止并卸载。')
+        setMessage(action === 'install'
+          ? '服务已安装并启动，已设为开机自动启动。'
+          : action === 'upgrade'
+            ? '服务已卸载并安装新版，已设为开机自动启动。'
+            : '服务已停止并卸载。')
       }
     } catch (reason) {
       if (mounted.current) setError(reason instanceof Error ? reason.message : String(reason))
@@ -102,6 +120,7 @@ export function WindowsServiceControl({ nativeRuntime, disabled, onBusyChange, o
   const pendingLabel = serviceRunning ? '正在停止并卸载…' : '正在安装并启动…'
   const ActionIcon = serviceRunning ? Trash2 : Download
   const actionDisabled = !nativeRuntime || disabled || pending !== null || !status
+  const upgradeDisabled = actionDisabled || !status?.upgradeAvailable
 
   return <section className={`driver-setup-item setup-service-item ${status?.state ?? 'unknown'}`} aria-labelledby="setup-service-title">
     <div className="driver-setup-heading">
@@ -117,12 +136,20 @@ export function WindowsServiceControl({ nativeRuntime, disabled, onBusyChange, o
     <div className="driver-suite-status" aria-live="polite">
       <span><Radio size={15} /> RPC 连接：{rpcLabel}</span>
       {rpcInfo && <span>{rpcInfo.name} v{rpcInfo.version} · {rpcInfo.protocolVersion} · {rpcInfo.pipeName}</span>}
+      {status && <>
+        <span>当前构建：{formatBuildTime(status.currentBuildTime)}</span>
+        <span>目录构建：{formatBuildTime(status.bundledBuildTime)}</span>
+        <span className={status.upgradeAvailable ? 'setup-service-update' : ''}>
+          {status.upgradeAvailable ? '发现可用升级' : status.currentBuildTime && status.bundledBuildTime ? '已是最新构建' : '暂无法比较构建'}
+        </span>
+      </>}
     </div>
     {error
       ? <p className="driver-setup-message setup-service-message error" role="alert">{error}</p>
       : <p className={`driver-setup-message setup-service-message ${!pending && rpcError ? 'error' : ''}`} role="status">{pending ? '正在请求管理员权限，请在 Windows 授权窗口中允许。' : rpcError || message}</p>}
     <div className="driver-setup-actions">
       <button type="button" className={`dialog-secondary ${serviceRunning ? 'danger' : ''}`} aria-label={`${actionLabel}服务`} disabled={actionDisabled} onClick={() => void run(action)}><ActionIcon size={14} /> {pending === action ? pendingLabel : actionLabel}</button>
+      {status?.upgradeAvailable && <button type="button" className="dialog-secondary setup-service-upgrade" aria-label="升级服务" disabled={upgradeDisabled} onClick={() => void run('upgrade')}><ArrowUpCircle size={14} /> {pending === 'upgrade' ? '正在卸载并安装…' : '升级服务'}</button>}
       <button type="button" className="dialog-secondary" aria-label="刷新服务状态" disabled={!nativeRuntime || checking || pending !== null} onClick={() => void refresh()}><RotateCcw size={14} /> {checking ? '检测中…' : '重新检测'}</button>
     </div>
   </section>

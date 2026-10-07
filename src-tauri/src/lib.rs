@@ -375,6 +375,7 @@ struct DriverInstallerReport {
 enum WindowsServiceAction {
     Install,
     Uninstall,
+    Upgrade,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -383,6 +384,9 @@ struct WindowsServiceStatus {
     state: String,
     #[cfg(target_os = "windows")]
     rpc: Option<service_rpc::ServiceRpcStatus>,
+    current_build_time: Option<u64>,
+    bundled_build_time: Option<u64>,
+    upgrade_available: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -413,11 +417,43 @@ fn powershell_path() -> std::path::PathBuf {
 }
 
 #[cfg(target_os = "windows")]
-fn windows_service_status(rpc: &service_rpc::ServiceConnection) -> WindowsServiceStatus {
+fn windows_service_build_time(path: &std::path::Path) -> Option<u64> {
+    use std::time::UNIX_EPOCH;
+
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis() as u64)
+}
+
+#[cfg(target_os = "windows")]
+fn installed_windows_service_executable() -> Option<std::path::PathBuf> {
+    std::env::var_os("ProgramData")
+        .map(std::path::PathBuf::from)
+        .map(|root| root.join("Axonkey/service/AxonkeyService.exe"))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_service_status_with_build(
+    rpc: &service_rpc::ServiceConnection,
+    bundled_executable: Option<&std::path::Path>,
+) -> WindowsServiceStatus {
     let rpc_status = rpc.status();
+    let current_build_time = installed_windows_service_executable()
+        .as_deref()
+        .and_then(windows_service_build_time);
+    let bundled_build_time = bundled_executable.and_then(windows_service_build_time);
     WindowsServiceStatus {
         state: if rpc_status.connected { "running" } else { "stopped" }.into(),
         rpc: Some(rpc_status),
+        current_build_time,
+        bundled_build_time,
+        upgrade_available: current_build_time
+            .zip(bundled_build_time)
+            .is_some_and(|(current, bundled)| bundled > current),
     }
 }
 
@@ -437,6 +473,7 @@ fn run_windows_service_action(
     let action_name = match action {
         WindowsServiceAction::Install => "Install",
         WindowsServiceAction::Uninstall => "Uninstall",
+        WindowsServiceAction::Upgrade => "Upgrade",
     };
     let mut command = std::process::Command::new(powershell_path());
     command
@@ -450,7 +487,7 @@ fn run_windows_service_action(
         ])
         .arg(&script)
         .args(["-Action", action_name]);
-    if matches!(action, WindowsServiceAction::Install) {
+    if matches!(action, WindowsServiceAction::Install | WindowsServiceAction::Upgrade) {
         let executable = windows_service_resource(
             resource_dir,
             "windows/service/AxonkeyService.exe",
@@ -477,14 +514,30 @@ fn run_windows_service_action(
 
 #[tauri::command]
 async fn get_windows_service_status(
+    app: tauri::AppHandle,
     #[cfg(target_os = "windows")] rpc: tauri::State<'_, service_rpc::ServiceConnection>,
 ) -> Result<WindowsServiceStatus, String> {
     #[cfg(target_os = "windows")]
     {
-        return Ok(windows_service_status(&rpc));
+        use tauri::Manager;
+
+        let resource_dir = app
+            .path()
+            .resource_dir()
+            .map_err(|error| format!("Cannot resolve bundled resources: {error}"))?;
+        let bundled_executable = windows_service_resource(
+            &resource_dir,
+            "windows/service/AxonkeyService.exe",
+            "windows/service/dist/AxonkeyService.exe",
+        )
+        .ok();
+        return Ok(windows_service_status_with_build(&rpc, bundled_executable.as_deref()));
     }
     #[cfg(not(target_os = "windows"))]
-    Err("服务管理仅支持 Windows。".into())
+    {
+        let _ = app;
+        Err("服务管理仅支持 Windows。".into())
+    }
 }
 
 #[tauri::command]
@@ -556,12 +609,19 @@ async fn manage_windows_service(
             .path()
             .resource_dir()
             .map_err(|error| format!("Cannot resolve bundled resources: {error}"))?;
+        let action_resource_dir = resource_dir.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            run_windows_service_action(&resource_dir, action)
+            run_windows_service_action(&action_resource_dir, action)
         })
         .await
         .map_err(|error| format!("服务操作失败：{error}"))??;
-        return Ok(windows_service_status(&rpc));
+        let bundled_executable = windows_service_resource(
+            &resource_dir,
+            "windows/service/AxonkeyService.exe",
+            "windows/service/dist/AxonkeyService.exe",
+        )
+        .ok();
+        return Ok(windows_service_status_with_build(&rpc, bundled_executable.as_deref()));
     }
     #[cfg(not(target_os = "windows"))]
     {

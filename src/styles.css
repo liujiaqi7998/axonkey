@@ -410,9 +410,12 @@ h1 { color: #202327; font-size: 28px; letter-spacing: 0; line-height: 1; }
 .driver-suite-status { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 9px 0 0 44px; color: #596671; font-size: 12px; }
 .driver-suite-status span { display: inline-flex; align-items: center; gap: 5px; }
 .driver-suite-status svg { color: #6c8cab; }
+.driver-suite-status .setup-service-update { color: #a96a1c; font-weight: 600; }
 .driver-setup-message { max-width: calc(100% - 44px); margin: 8px 0 0 44px; overflow: visible; color: #69737c; font-size: 12px; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }
 .driver-setup-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 9px 0 0 44px; }
 .driver-setup-actions .dialog-secondary { height: 30px; padding: 0 10px; font-size: 12px; }
+.driver-setup-actions .setup-service-upgrade { border-color: #dfc08f; color: #8a5a1c; background: #fffaf0; }
+.driver-setup-actions .setup-service-upgrade:hover:not(:disabled) { border-color: #c99f60; background: #fff3db; }
 .driver-restart-notice { display: flex; gap: 10px; width: 100%; margin-top: 9px; padding: 9px 12px; border-left: 3px solid #83a9ce; color: #66717b; background: #eef2f5; }
 .driver-restart-notice svg { flex: 0 0 auto; margin-top: 1px; }
 .driver-restart-notice > div { display: flex; flex-direction: column; gap: 2px; }

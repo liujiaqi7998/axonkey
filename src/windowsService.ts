@@ -20,9 +20,12 @@ export type WindowsServiceStatus = {
     } | null
     error: string | null
   }
+  currentBuildTime: number | null
+  bundledBuildTime: number | null
+  upgradeAvailable: boolean
 }
 
-export type WindowsServiceAction = 'install' | 'uninstall'
+export type WindowsServiceAction = 'install' | 'uninstall' | 'upgrade'
 
 export type WindowsDeviceInfo = {
   instanceId: string

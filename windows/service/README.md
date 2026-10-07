@@ -149,7 +149,7 @@ cd windows\service\script
 
 Windows 首次使用设置的“驱动安装”页包含服务状态，以及安装、卸载、启动、停止操作。
 状态通过 Windows 服务管理器只读查询，页面每 3 秒和窗口重新获得焦点时刷新。
-安装、启动、停止和卸载通过 `ShellExecuteExW` 的 `runas` 请求管理员权限，等待操作完成后再读取实际状态。
+安装、升级、启动、停止和卸载通过 `ShellExecuteExW` 的 `runas` 请求管理员权限，等待操作完成后再读取实际状态。
 “开机自启”通过 `SetServiceEnable` RPC 由已运行的 LocalSystem 服务调用 SCM 设置：启用为
 `Automatic`，关闭为 `Manual`，不再由桌面进程直接执行 PowerShell。
 
@@ -158,6 +158,8 @@ Windows 首次使用设置的“驱动安装”页包含服务状态，以及安
 `%ProgramData%\Axonkey\service\AxonkeyService.exe`，再将复制后的文件注册为 Windows 服务；
 服务以 LocalSystem 注册并设置开机自动启动，安装后可单独点击“启动”。
 卸载会先等待服务停止完成，再删除服务注册和 `%ProgramData%\Axonkey\service` 目录；日志和注册表配置保留。
+升级会先执行完整卸载，再用当前 `windows\service` 构建产物安装并启动服务；复制时保留构建文件时间，
+桌面端据此比较已安装构建与目录构建并显示可用升级。
 操作错误记录在 `%ProgramData%\Axonkey\Logs\ServiceManagement.log`。
 
 `npm run build:windows-service` 使用 Visual Studio C++ 工具链和 CMake/Ninja 构建服务，
