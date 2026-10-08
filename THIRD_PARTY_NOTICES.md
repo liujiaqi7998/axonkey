@@ -1,5 +1,28 @@
 # Third-party notices
 
+## Windows Rust service
+
+The independent `windows/service/rust` crate preserves the RC003 attribution
+below. Its exact dependency graph is recorded in its own `Cargo.lock`.
+Direct dependencies declare the following licenses in their package metadata:
+
+| Package | Version | License | Source |
+| --- | --- | --- | --- |
+| tokio | 1.53.2 | MIT | https://github.com/tokio-rs/tokio |
+| prost / prost-build | 0.13.5 | Apache-2.0 | https://github.com/tokio-rs/prost |
+| windows | 0.61.3 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-future | 0.2.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| winreg | 0.55.0 | MIT | https://github.com/gentoo90/winreg-rs |
+| log | 0.4.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/log |
+| cc (build only) | 1.6.0 | MIT OR Apache-2.0 | https://github.com/rust-lang/cc-rs |
+| sha2 (tests only) | 0.10.9 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
+| protoc-bin-vendored (build only) | 3.3.0 | MIT | https://github.com/stepancheg/rust-protoc-bin-vendored/ |
+
+The vendored protoc executable is a build tool and is not shipped inside the
+service executable. Upstream license texts remain in the corresponding Cargo
+packages. This direct-dependency inventory does not replace collecting the
+complete transitive license texts for the eventual release package.
+
 ## remote-bridge-hub
 
 - Project: `xxb26553663-star/remote-bridge-hub`

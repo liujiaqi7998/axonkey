@@ -48,8 +48,7 @@ report 的按下集合计算按下/释放边沿，未知 usage 会安全忽略�
 设置页管理服务；开发环境也可使用：
 
 ```powershell
-cmake -S windows/service -B .build/service
-cmake --build .build/service --config Release
+npm run build:windows-service
 powershell -ExecutionPolicy Bypass -File .\scripts\manage-windows-service.ps1 -Action Install -ServiceExecutable .\windows\service\dist\AxonkeyService.exe
 powershell -ExecutionPolicy Bypass -File .\scripts\manage-windows-service.ps1 -Action Start
 ```

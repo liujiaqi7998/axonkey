@@ -1,5 +1,5 @@
-//! Windows named-pipe transport for AxonkeyService. The service uses nanopb;
-//! prost generates wire-compatible Rust types from the same schema.
+//! Windows named-pipe transport for AxonkeyService. Both endpoints generate
+//! prost types from the same schema, retaining compatibility with older services.
 
 use std::{
     io,

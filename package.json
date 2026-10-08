@@ -9,6 +9,9 @@
     "build": "tsc -b && vite build",
     "build:tauri": "npm run build:windows-service && node scripts/verify-macos-audio-resources.mjs && npm run build",
     "build:windows-service": "node scripts/build-windows-service.mjs",
+    "test:windows-service": "node scripts/build-windows-service.mjs --test",
+    "build:windows-service:rust": "node scripts/build-windows-service-rust.mjs",
+    "test:windows-service:rust": "node scripts/build-windows-service-rust.mjs --test",
     "test:release": "node --test test/release-notes.test.mjs test/version-release.test.mjs test/macos-audio-package.test.mjs test/macos-audio-battery.test.mjs test/macos-audio-tail-drain.test.mjs test/macos-input-system-event.test.mjs test/tauri-event-capability.test.mjs test/tauri-manifest-stability.test.mjs test/behavior-editor-layout.test.mjs test/behavior-history.test.mjs test/audio-gain.test.mjs test/release-update.test.mjs test/native-release-update.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri"

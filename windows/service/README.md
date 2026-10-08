@@ -1,236 +1,88 @@
 # AxonkeyService
 
-这是管理 `QuarborHIDFilterDriver` 驱动的 Windows 服务，服务名称和可执行文件分别为
-`AxonkeyService` 和 `AxonkeyService.exe`。服务启动后即执行设备管理。
+Windows 用户态服务已使用 Rust 实现，源码位于 [rust/](rust/README.md)。旧 C++ 服务、CMake 构建和仅供旧服务使用的 C/nanopb 编解码器已移除。驱动、公共 IOCTL 头文件和 [protobuf 协议](../../protobuf/axonkey_service.proto) 保持不变。
 
-服务启动后枚举 HID Keyboard，匹配 `VID_2717`/`VID&012717` 与
-`PID_32B8`/`PID&32B8` 的设备，依次挂载过滤器、开启数据转发，再通过
-`IOCTL_QUARBOR_SET_INPUT_BLOCK` 屏蔽送往 Windows 的原始输入。设备变化会触发重新枚举。
-原始 HID 报告读取循环已接入，`Endpoint::OnHidReport` 将完整报告发布为 RPC `KeyboardEvent`；
-桌面端负责按 usage 集合解析和执行映射，并在需要保留原按键时通过 Windows `SendInput`
-重放对应虚拟键。服务本身不会把报告重新注入物理 RC003 设备；启用屏蔽后，Windows
-不会再收到该设备未经桌面端处理的原始按键输入。Endpoint 读线程停止时会发布一个
-空 report，作为桌面端释放按键状态的 reset 通知。
+服务名为 `AxonkeyService`，可执行文件为 `AxonkeyService.exe`，协议版本为 `axonkey.service.v1`。服务自身版本仍为 `0.3.1`，与桌面应用版本独立。
 
-`ServiceConfig` 在服务启动时读取 64 位注册表配置：
+## 构建和验证
 
-- 路径：`HKLM\SOFTWARE\Axonkey\Service`。
-- `Enabled`（`REG_DWORD`）：服务设备处理总开关，默认 `1`（开启）。服务初始化时读取；关闭时不枚举/挂载设备，并清理已注册设备和语音线程。
-- `AudioGainDb`（`REG_DWORD`）：音频增益，单位 dB，默认 `2`；按有符号 32 位整数读取，允许 `-30`～`30`。负数以补码保存，兼容原有正数配置。
-- `RemapConfig`（`REG_BINARY`）：`QUARBOR_REMAP_CONFIG` 的完整二进制结构，默认空表。
-
-缺失或无效的增益值会恢复并保存为 `2`。改键表仍只保留存储定义，不下发驱动。
-
-总开关可以直接修改注册表，也可以通过本地 protobuf RPC 动态控制。`SetServiceStatus`
-设置为 `true` 会立即执行一次设备协调并持久化；设置为 `false` 会取消设备注册、停止语音线程并持久化。
-查询使用 `GetServiceStatus`：
+需要 Rust 1.98.0、Visual Studio x64 MSVC 工具链与 Windows SDK。在仓库根目录运行：
 
 ```powershell
-Set-ItemProperty -Path 'HKLM:\SOFTWARE\Axonkey\Service' -Name Enabled -Type DWord -Value 0
+npm run build:windows-service
+npm run test:windows-service
 ```
 
-增益在蓝牙音频完成解码及 48 kHz 重采样之后、写入虚拟麦克风驱动之前应用，
-包括结束时的尾音。幅度倍率为 `10^(dB/20)`，默认 2 dB 约为 1.259 倍；0 dB 不改变
-音频。超过 PCM16 范围的样本会饱和截断，避免整数溢出；较高增益可能产生削波。
+默认构建输出 `windows/service/dist/AxonkeyService.exe` 和匹配 PDB，供原有 Tauri 开发和打包入口使用；同时保存一份到 `.build/service-rust/dist`。复制保留源构建时间，兼容桌面端升级检测。
 
-负值降低音量，正值提高音量。在管理员 PowerShell 中调整，例如设置为 -6 dB，重启服务生效：
+测试入口执行 rustfmt、严格 Clippy、Debug/Release 测试、Release 构建、x64/静态运行库检查和无硬件 ABI 自检。音频回归使用删除前捕获的 107 组 C++ 输出摘要，无需保留或编译旧 C++ 代码。首次构建需要下载锁定依赖。
 
 ```powershell
-New-ItemProperty -Path 'HKLM:\SOFTWARE\Axonkey\Service' -Name AudioGainDb -PropertyType DWord -Value (-6) -Force
-Restart-Service AxonkeyService
+& .\windows\service\dist\AxonkeyService.exe --check
 ```
 
-## RC003 语音接收
+`--check` 仅校验公共 C 头文件与 Rust 的 ABI；实际服务必须由 SCM 启动。普通自动测试使用隔离的 HKCU 配置、临时日志和测试管道，不安装服务或修改真实设备。实机验收进度见 [实施记录](../../docs/WINDOWS_SERVICE_RUST_IMPLEMENTATION.md)。
 
-每个已初始化的 RC003 设备都会创建一个独立的语音接收线程。线程使用
-Windows C++/WinRT GATT API 查找 ATVV 服务，并订阅 AUDIO、CTL 特征：
+生产构建只保留 `rust/native/boundary.c` 这个很小的 C 边界：用于共享映射的 SEH 异常保护、内存屏障和 ABI 核对。Rust panic 不能替代 Windows 访问异常保护，因此仍需要 MSVC C 编译器；不再需要服务的 C++/WinRT、CMake、Ninja、spdlog 或 nanopb。
 
-- ATVV：`AB5E0001-5A21-4F05-BC7D-AF01F617B664`
-- TX：`AB5E0002-5A21-4F05-BC7D-AF01F617B664`
-- AUDIO：`AB5E0003-5A21-4F05-BC7D-AF01F617B664`
-- CTL：`AB5E0004-5A21-4F05-BC7D-AF01F617B664`
+## 设备与键盘
 
-连接完成后先向 TX 写入 `0A 01 00 00 03 03`。CTL 的 `08` 事件会尝试独占
-`QuarborVirtualMicrophoneDriver`，成功后按协议版本回复 `0C 00`（旧版协议附带
-codec 字节）；遥控器主动发送 `04` 时只开启本地音频接收，不重复发送 `0C 00`。
-CTL 的 `00 02` 会停止音频，停止后的迟到包会被丢弃，直到新的 `08`/`04` 开始事件。AUDIO 中的 RC003
-16 kHz 单声道 ADPCM 按协议解码、平滑，并线性插值转换为 48 kHz、16 位、单声道
-PCM，再写入虚拟麦克风。虚拟麦克风已被其他语音线程占用时，后续线程的音频直接
-丢弃，先取得句柄的线程保持独占。被拒绝的会话不会因其他线程释放句柄而中途抢占，
-只有下一次开始事件才重新尝试。连接销毁前会按协议版本向 TX 发送 `0D` 关闭
-当前会话。
+服务在启用时枚举 HID Keyboard，按 `VID_2717` / `VID&012717` 和 `PID_32B8` / `PID&32B8` 识别 RC003。它保留其他 LowerFilters，只添加/移除 Quarbor 过滤器，并回读验证。设备通知和每 2 秒扫描用于协调连接。
 
-线程销毁时会停止并关闭虚拟麦克风句柄、解除 GATT 回调和释放蓝牙对象。服务停止
-会先销毁所有语音线程，再解除 HID 过滤器挂载。
+服务独占打开过滤器端点，校验驱动身份，先开启转发再屏蔽原始输入。完整 HID report 通过 RPC 的 `keyboard` 事件发给桌面端，由桌面端解析和执行映射。端点退出前取消并排空 pending I/O、解除拦截/转发，发布空 report，通知桌面端释放按键。
 
-语音线程依赖 `windows/driver/shared/include/QuarborVirtualMicrophone.h` 定义的
-`MAP_RING/START/STOP/RESET/QUERY_STATE/COMMIT` 控制接口；安装的虚拟麦克风驱动
-需要提供该用户态控制接口。
+关闭设备处理或停止服务时，先取消并回收 HID/GATT 工作线程，再解除已配置的 Quarbor HID Keyboard 挂载，包括离线实例。驱动安装仍通过原驱动安装器处理。
 
-音频输出参考 `AxonkeyVirtualMicrophoneDriverTest/src/AudioTest.cpp` 的 `InjectTone`：
-独占打开 `\\.\QuarborVirtualMicrophone`，依次执行 `MAP_RING → RESET → START`，
-通过 `QUERY_STATE` 获取空闲空间，将 PCM 拷入映射的环形缓冲区，执行内存屏障后
-携带当前 Generation 和 WritePosition 提交 `COMMIT`。每次最多提交 960 字节。
-目标录音设备是 **麦克风 (Quarbor Virtual Microphone)**；录音应用需要选择该设备。
+## 配置
 
-- `VoiceReceiver.cpp`：GATT 回调只入队，由单个工作线程按入队顺序处理 AUDIO/CTL。
-- `VoiceAudioSession.cpp`、`AdpcmDecoder.h`：会话独占、协议处理、ADPCM 解码与重采样。
-- `VirtualMicrophoneSink.cpp`：驱动映射、格式校验、回绕拷贝、提交和释放。
+64 位注册表：`HKLM\SOFTWARE\Axonkey\Service`。
 
-首次 AUDIO 包会在成功打开驱动后继续解码；缓冲区满时以 1 ms 间隔等待，连续
-250 ms 无空闲空间则记录故障并结束本次输出。正常语音结束时补齐重采样尾音，
-最多等待 250 ms 排空已提交的音频，再执行会清空缓冲区的 `STOP`。服务停止时可取消等待。
-参考程序的 `Sleep(9)` 用于给合成测试音限速；实际蓝牙音频已有输入节奏，因此服务不额外延时。
+| 值 | 类型与含义 |
+| --- | --- |
+| Enabled | REG_DWORD，0/1，默认 1；关闭时不启动设备处理 |
+| AudioGainDb | REG_DWORD，按有符号 32 位解析，-30～30 dB，默认 2 |
+| RemapConfig | REG_BINARY，公共结构完整字节，仅保留存储，不下发驱动 |
 
-构建需要支持 C++20 的编译器和包含 C++/WinRT 头文件的 Windows SDK。
+缺失或无效值恢复默认值。RPC 运行状态先更新再持久化；写入失败返回失败，不能据此假定运行状态已回滚。`SetServiceEnable` 修改 SCM Automatic/Manual，与设备处理开关 `SetServiceStatus` 分开。
 
-## 本地 protobuf RPC
+## RC003 语音
 
-服务启动后先创建 `\\.\pipe\AxonkeyService.v1`，再启动设备扫描线程。管道帧由 4
-字节小端长度和 `protobuf/axonkey_service.proto` 定义的 proto3 消息组成；编解码由
-[nanopb](https://github.com/nanopb/nanopb) 0.4.9（CMake `FetchContent` 钉版本）
-完成，C++ 封装位于 `protobuf/axonkey_rpc.*`，生成代码在 `protobuf/generated/`。
-桌面端可通过 `GetServiceInfo`（其中包含当前 `audio_gain_db`）、
-`GetServiceStatus`、`SetServiceStatus`、`SetServiceEnable`、`SetAudioGain`、`GetDevices`、`GetVoiceStatus`、`GetAudioLevel` 查询或控制服务，
-并通过 `Subscribe` 订阅 `keyboard`、`audio_level`、`voice_status`、`service_issue` 事件。键盘报告来自
-已挂载并拦截输入的 Quarbor 端点，音频电平来自增益处理后的 PCM 样本。
-`GetDevices` 的每个 `Device` 还会尽力返回服务可读取的电量 `battery_level` 和描述名称
-`description_name`；读取失败时电量字段不设置、描述名称为空，不影响设备列表响应。
+每个设备的 MTA 工作线程使用 Windows Rust GATT 投影发现 ATVV 服务，订阅 AUDIO/CTL。UUID 末段固定为 `5A21-4F05-BC7D-AF01F617B664`，服务/TX/AUDIO/CTL 前段分别为 `AB5E0001`～`AB5E0004`。
 
-`service_issue` 是可恢复异常通道，不会结束命名管道连接。事件携带稳定的 `code`、设备实例、
-原生错误码、时间戳和 `recoverable` 标志；当前代码包括 `bluetooth_initialization_failed`、
-`bluetooth_runtime_failed`、`hid_filter_driver_error`、`virtual_microphone_unavailable`、
-`virtual_microphone_write_failed`、`virtual_microphone_reset_failed`、
-`memory_allocation_failed` 和 `rpc_event_publish_failed`。设备协调、蓝牙语音线程、HID 读取线程
-和虚拟麦克风写入失败时，各自隔离当前设备/会话，协调线程继续运行并在下一轮重试；桌面端将该事件
-显示为可关闭的非阻塞提示。
+连接后发送 `0A 01 00 00 03 03` 请求能力；`08` 请求开启麦克风，成功后回复 `0C 00`（旧协议附 codec）；`04` 开始音频，`00` 结束。被拒绝的会话不会中途抢占麦克风，结束后的迟到音频被丢弃；关闭连接时按版本发送 `0D`。
 
-每个 RPC 客户端都有独立的出站发送线程；请求响应和事件先进入有界队列，再由该线程
-按顺序写入管道。单次写入超过 2 秒会被取消，队列超过 256 帧或 4 MiB 也会主动断开
-客户端，因此不读取管道的用户态客户端不会阻塞服务线程或持续占用内存。
-在 Visual Studio Developer PowerShell 中执行：
+ADPCM 按高半字节优先解码，平滑并从 16 kHz 插值到 48 kHz 单声道 PCM16。增益倍率为 `10^(dB/20)`，饱和后写入；正常结束补齐尾音。音频输出独占打开 `\\.\QuarborVirtualMicrophone`，执行 MAP_RING → RESET → START，经 QUERY_STATE 校验后每次最多复制/提交 960 字节。复制有 SEH 保护和内存屏障；满缓冲区与正常结束排空最长等待 250 ms，可取消。
+
+GATT 回调通过弱引用入队，队列限制 1024 个事件/65536 字节，溢出结束当前连接。WinRT 超时后请求取消并等待同一个操作真正完成，避免遗留后台工作。若驱动永不确认取消，服务可能保持 STOP_PENDING；真实取消行为仍需硬件验证。多台同型号设备沿用旧版 VID/PID 匹配限制。
+
+## 本地 RPC
+
+管道：`\\.\pipe\AxonkeyService.v1`。帧为 4 字节小端长度加 protobuf 消息，最大 1 MiB。服务和桌面端均由 prost 根据同一 schema 生成代码，不使用 gRPC。
+
+支持 GetServiceInfo、GetServiceStatus、SetServiceStatus、SetServiceEnable、SetAudioGain、GetDevices、GetVoiceStatus、GetAudioLevel、Subscribe。订阅事件为 keyboard、audio_level、voice_status、service_issue。订阅确认先入队，再开放事件；设备电量未知为 absent，0% 是有效值。
+
+一个 Tokio runtime 管理管道连接，最多 32 个活动客户端。每客户端出站上限 256 帧/4 MiB，每帧写入超时 2 秒；慢客户端单独断开。允许本机桌面访问，拒绝远程客户端。RPC 绑定失败时不会启动设备拦截。
+
+## 安装和运行
+
+构建不会修改已安装服务。安装驱动后，可使用桌面端服务管理，或管理员 PowerShell：
 
 ```powershell
-cmake -S windows/service -B .build/service
-cmake --build .build/service --config Release
+powershell -ExecutionPolicy Bypass -File .\scripts\manage-windows-service.ps1 -Action Install -ServiceExecutable .\windows\service\dist\AxonkeyService.exe
+powershell -ExecutionPolicy Bypass -File .\scripts\manage-windows-service.ps1 -Action Start
 ```
 
-安装 `windows/driver/QuarborHIDFilterDriver.inf` 驱动包后，以管理员身份注册服务：
+应用安装位置仍为 `%ProgramData%\Axonkey\service\AxonkeyService.exe`，账户为 LocalSystem。开发辅助脚本 `windows/service/script/Test-AxonkeyService.ps1` 仍管理 dist 中的服务，支持 Install/Uninstall/Start/Stop/Restart/Status；它不安装驱动。
+
+## 日志和诊断
+
+`AxonkeyService.log` 写在 EXE 同目录，UTF-8，单文件 100 KiB，不保留轮转副本。每条最多 16 KiB 正文，保留完整 UTF-8 字符，换行/NUL 被替换；多线程记录受锁保护，立即 flush，并保持调用方 Win32 last-error。
+
+每条包含 ISO 8601 本地时间、时区、级别、PID/TID。文件不可写时保留调试器输出。服务问题通过 `service_issue` 发布，某个设备/语音失败不终止整个服务。
 
 ```powershell
-sc.exe create AxonkeyService binPath= "C:\path\AxonkeyService.exe" start= auto obj= LocalSystem
-sc.exe start AxonkeyService
-```
-
-开发验证可使用 `script/Test-AxonkeyService.ps1`，它固定管理
-`dist\AxonkeyService.exe`（CMake 默认输出目录）。不带参数进入交互菜单；
-也可传 `-Action`。安装、启动、停止、重启和卸载会自动请求管理员权限；
-状态查询不需要管理员权限。
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-cd windows\service\script
-.\Test-AxonkeyService.ps1                  # 交互菜单
-.\Test-AxonkeyService.ps1 -Action Status
-.\Test-AxonkeyService.ps1 -Action Install
-.\Test-AxonkeyService.ps1 -Action Start
-.\Test-AxonkeyService.ps1 -Action Stop
-.\Test-AxonkeyService.ps1 -Action Restart
-.\Test-AxonkeyService.ps1 -Action Uninstall
-```
-
-`Start` 在服务还未安装时会先安装；`Install` 将 SCM `binPath` 指向当前
-`dist\AxonkeyService.exe`，并设置为开机自动启动（LocalSystem）。
-脚本不会安装 HID 或虚拟麦克风驱动，这些驱动需要先单独安装。
-
-服务停止时会关闭端点句柄，并解除所有已保存的 `QuarborHIDFilterDriver` 设备挂载。
-
-## 桌面应用中的服务管理
-
-Windows 首次使用设置的“驱动安装”页包含服务状态，以及安装、卸载、启动、停止操作。
-状态通过 Windows 服务管理器只读查询，页面每 3 秒和窗口重新获得焦点时刷新。
-安装、升级、启动、停止和卸载通过 `ShellExecuteExW` 的 `runas` 请求管理员权限，等待操作完成后再读取实际状态。
-“开机自启”通过 `SetServiceEnable` RPC 由已运行的 LocalSystem 服务调用 SCM 设置：启用为
-`Automatic`，关闭为 `Manual`，不再由桌面进程直接执行 PowerShell。
-
-应用使用 `scripts/manage-windows-service.ps1` 管理固定的 `AxonkeyService`。
-安装会将运行环境中的 `windows\service\AxonkeyService.exe` 复制到
-`%ProgramData%\Axonkey\service\AxonkeyService.exe`，再将复制后的文件注册为 Windows 服务；
-服务以 LocalSystem 注册并设置开机自动启动，安装后可单独点击“启动”。
-卸载会先等待服务停止完成，再删除服务注册和 `%ProgramData%\Axonkey\service` 目录；日志和注册表配置保留。
-升级会先执行完整卸载，再用当前 `windows\service` 构建产物安装并启动服务；复制时保留构建文件时间，
-桌面端据此比较已安装构建与目录构建并显示可用升级。
-操作错误记录在 `%ProgramData%\Axonkey\Logs\ServiceManagement.log`。
-
-`npm run build:windows-service` 使用 Visual Studio C++ 工具链和 CMake/Ninja 构建服务，
-产物位于 `windows/service/dist/AxonkeyService.exe`，使用静态 MSVC 运行库。
-Tauri 的开发与打包入口会先自动执行此构建，发布资源包含服务程序和管理脚本。
-直接运行 Cargo 测试前，需先执行一次该构建命令以准备资源。
-
-## 运行日志与回归验证
-
-使用 [spdlog](https://github.com/gabime/spdlog/tree/v1.15.3) 记录服务生命周期、设备连接、
-配置回退和语音异常。CMake 首次配置需要 Git 和网络，拉取固定版本 1.15.3 的提交
-`6fa36017cfd5731d617e1a934f0e5ea9c4445b13`，编译进服务，
-无需额外部署日志 DLL。离线构建可通过 `FETCHCONTENT_SOURCE_DIR_SPDLOG` 指向该版本的源码目录。
-
-UTF-8 日志 `AxonkeyService.log` 写在 **AxonkeyService.exe 所在目录**，不受服务工作目录影响，
-同时保留调试器输出。服务账户需有该目录的写权限；日志初始化或写入失败只输出调试诊断，
-不会抛出到业务代码或覆盖调用方的 Win32 错误码。
-
-单文件上限为 **100 KiB（102400 字节）**：下一条记录会超限时，丢弃文件内全部旧日志再写入新记录，
-不生成备份文件。重启时追加已有日志，已有文件超限则清空；单条超长消息截断并标注 `[truncated]`。
-每条日志立即 flush，多线程写入受锁保护，不记录音频内容。
-
-格式为 ISO 8601 本地时间（毫秒和时区）、级别、服务名、进程/线程 ID、消息，例如：
-
-```text
-2026-09-19T09:30:00.123+08:00 [info] [AxonkeyService] [pid=1234 tid=5678] AxonkeyService running
-```
-
-级别包括 `info`（启停和连接状态）、`warning`（配置回退、可恢复异常）、`error`（操作失败），
-可用时附带 Win32/HRESULT 错误码。消息中的换行替换为空格，保持一条事件一行。
-
-管理员 PowerShell 中启动服务并跟踪日志：
-
-```powershell
-Start-Service AxonkeyService
 Get-Service AxonkeyService
 Get-Content "$env:ProgramData\Axonkey\service\AxonkeyService.log" -Encoding UTF8 -Tail 50 -Wait
 ```
 
-蓝牙 API 返回空服务时，语音线程会记录错误并由设备重扫重试，不再直接访问空对象。
-日志中的“unavailable or access denied”表示 API 未返回 ATVV 服务，具体连接或访问原因
-仍需结合设备状态检查；服务为 Running 不代表语音已经就绪。
-
-构建默认包含无需硬件的回归测试，覆盖空 GATT 服务、清理异常、ADPCM 首包/分包/尾音、
-会话独占、写入错误、环形缓冲区回绕、满缓冲区等待及取消；日志测试另外覆盖中文 EXE 路径、
-UTF-8 和格式/级别、多线程完整记录、重启追加、超限丢弃、超长消息、不可写路径和错误码保持：
-
-```powershell
-ctest --test-dir .build/service-msvc -C Release --output-on-failure
-```
-
-MSVC 构建同时生成 `AxonkeyService.pdb`，排查崩溃时请保留与 EXE 同次构建的 PDB。
-
-## 单独验证虚拟麦克风输出
-
-构建也会生成 `VirtualMicrophoneProbe.exe`。它使用服务的实际写入模块注入两秒
-1 kHz 测试音，再通过 WASAPI 从名称包含 `Quarbor Virtual Microphone` 的活动录音端点
-回采并比对；不会使用默认或物理麦克风，也不依赖 RC003 蓝牙连接。该工具不自动加入 CTest。
-
-关闭占用驱动注入接口的服务或测试工具后，在**管理员 PowerShell** 执行：
-
-```powershell
-& .\.build\service-msvc\VirtualMicrophoneProbe.exe
-$LASTEXITCODE # 0 = 回采匹配通过；1 = 失败，查看控制台诊断
-```
-
-驱动控制入口仅允许 LocalSystem/管理员写入。普通权限运行时可能返回 `Win32=5`
-（拒绝访问），不能据此认定驱动没有音频接口。`Win32=2` 通常表示未安装控制入口，
-设备忙/共享冲突表示已有其他注入者。Probe 将诊断输出到控制台；实际服务仍写入上述日志文件。
-
-服务日志中的 `PCM ingress started` 表示驱动注入入口已开启；停止时的 `committed` 是
-成功提交字节数，`forwarded` 是驱动已转发字节数，`queued` 是尚未读取字节数。
-有提交但未转发时，检查录音应用是否正在使用目标麦克风；如果一直只有 `ATVV discovery`
-错误，则故障发生在蓝牙输入端，尚未进入 PCM 输出流程。
+`PCM ingress started` 表示输出入口已开启，不代表录音回采已验收。停止日志含 committed/forwarded/queued/silence；录音应用需选择 Quarbor Virtual Microphone。代码导航见 [架构说明](SERVICE_ARCHITECTURE.md)。

@@ -1,0 +1,39 @@
+name: Windows Rust service
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'windows/service/**'
+      - 'windows/driver/shared/include/**'
+      - 'protobuf/**'
+      - 'scripts/build-windows-service*.mjs'
+      - 'package.json'
+      - '.github/workflows/windows-service-rust.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      RUSTUP_TOOLCHAIN: '1.98.0'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Install pinned Rust compiler and checks
+        shell: pwsh
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy --target x86_64-pc-windows-msvc --no-self-update
+      - name: Format, lint, frozen baselines, pipe stress and packaged release
+        run: npm run test:windows-service
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-service-rust-x64
+          path: windows/service/dist/*
+          if-no-files-found: error

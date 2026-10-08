@@ -124,8 +124,7 @@ function Assert-DistExe {
   $exe
 
 请先构建:
-  cmake -S windows/service -B .build/service
-  cmake --build .build/service --config Release
+  npm run build:windows-service
 产物应位于 windows/service/dist/AxonkeyService.exe
 "@
     }

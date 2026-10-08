@@ -1,43 +1,41 @@
 # Axonkey service protocol
 
-`axonkey_service.proto` is the wire contract between `AxonkeyService.exe` and
-the desktop application. The transport is a local Windows named pipe named
-`\\.\pipe\AxonkeyService.v1`. Every message is framed as a four byte little
-endian payload length followed by a protobuf message.
+`axonkey_service.proto` is the shared wire contract between the Rust Windows
+service and the desktop application. Both generate Rust types with prost during
+Cargo builds. Generated code lives in Cargo OUT_DIR, not in this directory.
 
-## Codec
+The old service-only C++ wrapper, nanopb generated files, generator options and
+CMake tests were removed with the C++ service. The schema and wire format remain
+unchanged. Historical implementations are available at Git revision
+`795ecd98e867ca0403ccce404608226f259022c7`.
 
-The Windows service uses [nanopb](https://github.com/nanopb/nanopb) (pinned to
-0.4.9 via CMake `FetchContent`) as the protobuf encode/decode runtime.
+## Transport
 
-| File | Role |
-| --- | --- |
-| `axonkey_service.proto` | Schema (includes pipe `Request` / `Response` envelopes) |
-| `axonkey_service.options` | nanopb field options (callbacks for variable strings/bytes) |
-| `generated/axonkey_service.pb.c/.h` | Committed nanopb output (regenerate when the schema changes) |
-| `axonkey_rpc.h/.cpp` | C++ API used by the service (`Parse` / `Serialize`) |
+The local Windows named pipe is `\\.\pipe\AxonkeyService.v1`. Every frame is a
+four-byte little-endian length followed by a protobuf message, up to 1 MiB.
+Request/Response carry a method/request ID and serialized payload. Events use a
+stable type string and serialized payload. This is not gRPC.
 
-The C++ surface keeps stable `axonkey::rpc::*` types so `RpcServer` and the rest
-of the service do not depend on generated C structs directly.
+The service exposes all methods declared in the schema and supports keyboard,
+audio_level, voice_status and service_issue subscriptions. Missing optional
+battery_level differs from a present value of zero. Negative audio gain uses
+the existing int32 protobuf representation.
 
-## Regenerating nanopb sources
+## Generation and tests
 
-Requires `protoc` and nanopb 0.4.9's generator:
+Edit only the shared schema when changing the protocol; both
+`windows/service/rust/build.rs` and `src-tauri/build.rs` regenerate their types.
+Each crate locks its prost/prost-build and vendored protoc dependencies.
 
-```powershell
-$np = "<path-to-nanopb-0.4.9>"
-$env:PYTHONPATH = "$np\generator;$np\generator\proto"
-protoc --plugin=protoc-gen-nanopb="$np\generator\protoc-gen-nanopb.bat" `
-  -I protobuf -I "$np\generator\proto" `
-  --experimental_allow_proto3_optional `
-  --nanopb_out=protobuf/generated `
-  protobuf/axonkey_service.proto
-```
-
-## Tests
+From the repository root on Windows:
 
 ```powershell
-cmake -S windows/service -B .build/service
-cmake --build .build/service --config Release
-ctest --test-dir .build/service -C Release --output-on-failure
+npm run test:windows-service
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib service_rpc
 ```
+
+The service suite covers actual named-pipe framing, subscription order, malformed
+messages, slow readers and reconnects. Desktop tests retain a historical nanopb
+wire fixture to check compatibility with older installed services. The optional
+running-service test requires a real local service and remains explicitly ignored
+during ordinary tests.
