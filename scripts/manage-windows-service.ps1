@@ -52,6 +52,28 @@ function Start-AxonkeyService {
     } finally { $service.Dispose() }
 }
 
+function Wait-AxonkeyServicePipe {
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $pipe = $null
+        try {
+            $pipe = [System.IO.Pipes.NamedPipeClientStream]::new(
+                '.',
+                'AxonkeyService.v1',
+                [System.IO.Pipes.PipeDirection]::InOut,
+                [System.IO.Pipes.PipeOptions]::None
+            )
+            $pipe.Connect(1000)
+            if ($pipe.IsConnected) { return }
+        } catch {
+            Start-Sleep -Milliseconds 250
+        } finally {
+            if ($pipe) { $pipe.Dispose() }
+        }
+    }
+    throw 'AxonkeyService is running but its RPC pipe did not become available.'
+}
+
 function Wait-AxonkeyServiceDeleted {
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     while (Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop) {
@@ -66,27 +88,45 @@ function Write-ServiceLog([string]$message) {
 }
 
 function Install-AxonkeyService {
-    $record = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
-    if ($record) {
-        Set-Service -Name $serviceName -StartupType Automatic
-        Start-AxonkeyService
-        return
-    }
     if (-not $ServiceExecutable -or -not (Test-Path -LiteralPath $ServiceExecutable -PathType Leaf)) {
         throw 'The bundled AxonkeyService.exe was not found.'
     }
     $serviceDirectory = Join-Path $env:ProgramData 'Axonkey\service'
     $destination = Join-Path $serviceDirectory 'AxonkeyService.exe'
+    $source = [System.IO.Path]::GetFullPath($ServiceExecutable)
+    $record = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+    if ($record) { Stop-AxonkeyService }
     New-Item -ItemType Directory -Path $serviceDirectory -Force | Out-Null
-    $buildTime = (Get-Item -LiteralPath $ServiceExecutable -ErrorAction Stop).LastWriteTimeUtc
-    Copy-Item -LiteralPath $ServiceExecutable -Destination $destination -Force
+    $buildTime = (Get-Item -LiteralPath $source -ErrorAction Stop).LastWriteTimeUtc
+    Copy-Item -LiteralPath $source -Destination $destination -Force
     (Get-Item -LiteralPath $destination -ErrorAction Stop).LastWriteTimeUtc = $buildTime
+    Write-ServiceLog "Service binary copied to $destination"
     $binaryPath = '"{0}"' -f ([System.IO.Path]::GetFullPath($destination))
-    New-Service -Name $serviceName -DisplayName 'Axonkey Service' `
-        -Description 'RC003 HID and voice service for Axonkey.' `
-        -BinaryPathName $binaryPath -StartupType Automatic | Out-Null
+    if ($record) {
+        $result = Invoke-CimMethod -InputObject $record -MethodName Change -Arguments @{
+            PathName  = $binaryPath
+            StartMode = 'Automatic'
+            StartName = 'LocalSystem'
+        }
+        if ($result.ReturnValue -ne 0) { throw "Service configuration update failed: Win32=$($result.ReturnValue)" }
+    } else {
+        New-Service -Name $serviceName -DisplayName 'Axonkey Service' `
+            -Description 'RC003 HID and voice service for Axonkey.' `
+            -BinaryPathName $binaryPath -StartupType Automatic | Out-Null
+    }
     Set-Service -Name $serviceName -StartupType Automatic
+    $installed = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+    if (-not $installed) { throw 'AxonkeyService registration disappeared after installation.' }
+    $registeredPath = $installed.PathName.Trim().Trim('"')
+    if ([System.IO.Path]::GetFullPath($registeredPath) -ine [System.IO.Path]::GetFullPath($destination)) {
+        throw "AxonkeyService BinPath was not updated: $($installed.PathName)"
+    }
+    if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) {
+        throw "AxonkeyService was not copied to $destination"
+    }
     Start-AxonkeyService
+    Wait-AxonkeyServicePipe
+    Write-ServiceLog "Service registered at $binaryPath; RPC pipe ready"
 }
 
 function Uninstall-AxonkeyService {

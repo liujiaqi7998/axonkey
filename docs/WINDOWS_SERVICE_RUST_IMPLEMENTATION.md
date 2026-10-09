@@ -78,6 +78,8 @@ npm run test:windows-service
 
 无需设置 AXONKEY_SERVICE_IMPLEMENTATION；旧值 cpp 会明确报错。构建复制到 `windows/service/dist` 并保留源构建时间，既有 Tauri 资源和服务管理脚本继续消费此路径；不自动安装、启动或替换 `%ProgramData%` 下的服务。
 
+应用内安装将内置 EXE 复制到 `%ProgramData%\Axonkey\service\AxonkeyService.exe`，并更新已有服务注册项的 `BinPath`；完成前会验证 `\\.\pipe\AxonkeyService.v1` 可连接。安装过程记录在 `%ProgramData%\Axonkey\Logs\ServiceManagement.log`，便于确认实际复制路径和管道就绪状态。
+
 全仓库引用核对确认旧 C/nanopb 封装仅被已删除的服务 CMake 使用；桌面端与 Rust 服务的 build.rs 都只读取保留的 `.proto`。删除了 19 个旧服务源码/头文件/CMake/测试文件和 6 个旧编解码器文件；它们没有用户未提交的源码修改，均可从 Git 基线 `795ecd98e867ca0403ccce404608226f259022c7` 恢复。恢复旧实现应在独立 checkout 构建该基线，当前构建入口不再提供 cpp 选择。
 
 ## 5. 尚未完成的阶段验收

@@ -74,6 +74,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\manage-windows-service.ps1 -A
 
 应用安装位置仍为 `%ProgramData%\Axonkey\service\AxonkeyService.exe`，账户为 LocalSystem。开发辅助脚本 `windows/service/script/Test-AxonkeyService.ps1` 仍管理 dist 中的服务，支持 Install/Uninstall/Start/Stop/Restart/Status；它不安装驱动。
 
+应用内安装每次都会把内置 EXE 复制到上述目录并更新 SCM 的 `BinPath`，即使测试机已有同名服务注册项也会修复旧路径；安装完成前还会等待 `\\.\pipe\AxonkeyService.v1` 可连接。服务管理日志位于 `%ProgramData%\Axonkey\Logs\ServiceManagement.log`，其中会记录实际复制路径、注册路径和管道就绪状态。
+
 ## 日志和诊断
 
 `AxonkeyService.log` 写在 EXE 同目录，UTF-8，单文件 100 KiB，不保留轮转副本。每条最多 16 KiB 正文，保留完整 UTF-8 字符，换行/NUL 被替换；多线程记录受锁保护，立即 flush，并保持调用方 Win32 last-error。
